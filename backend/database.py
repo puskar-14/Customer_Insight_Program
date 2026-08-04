@@ -2,11 +2,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./shopsense_v3.db"
+# Changed from SQLite to PostgreSQL
+# Note: The @ symbol in the password must be URL encoded as %40
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:Puskar%402005@localhost:5432/shopsense_db"
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
-)
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():

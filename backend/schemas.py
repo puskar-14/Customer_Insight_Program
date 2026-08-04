@@ -53,6 +53,7 @@ class ProductBase(BaseModel):
     price: float
     discount: Optional[float] = 0.0
     quantity: int
+    sales: Optional[int] = 0
     sku: Optional[str] = None
     status: Optional[str] = "active"
     picture_url: Optional[str] = None

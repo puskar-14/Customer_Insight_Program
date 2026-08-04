@@ -77,7 +77,7 @@ const AddProduct = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
-    title: '', category: '', price: '', quantity: '', discount: '0', sku: '', description: ''
+    title: '', category: '', price: '', quantity: '', discount: '0', sku: '', description: '', status: 'active'
   });
   const [image, setImage] = useState(null);
 
@@ -90,7 +90,7 @@ const AddProduct = () => {
     if (image) data.append('image', image);
 
     try {
-      const res = await fetch('http://localhost:8005/vendor/products', {
+      const res = await fetch('http://localhost:8006/vendor/products', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
         body: data
@@ -108,16 +108,13 @@ const AddProduct = () => {
       <h2 className="gradient-text" style={{ marginBottom: '2rem' }}><PlusCircle /> Add New Product</h2>
       <form onSubmit={handleSubmit}>
         <div className="grid grid-cols-2" style={{ gap: '1rem', marginBottom: '1rem' }}>
-          <div className="form-group"><label>Product Title</label><input type="text" className="input-field" required value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} /></div>
-          <div className="form-group"><label>Category</label><input type="text" className="input-field" required value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})} /></div>
-          <div className="form-group"><label>Price ($)</label><input type="number" step="0.01" className="input-field" required value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
-          <div className="form-group"><label>Discount (%)</label><input type="number" className="input-field" value={formData.discount} onChange={e => setFormData({...formData, discount: e.target.value})} /></div>
-          <div className="form-group"><label>Stock Quantity</label><input type="number" className="input-field" required value={formData.quantity} onChange={e => setFormData({...formData, quantity: e.target.value})} /></div>
-          <div className="form-group"><label>SKU</label><input type="text" className="input-field" value={formData.sku} onChange={e => setFormData({...formData, sku: e.target.value})} /></div>
-        </div>
-        <div className="form-group">
-          <label>Description (AI will enhance this)</label>
-          <textarea className="input-field" rows="4" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} />
+          <div className="form-group"><label>Product Title</label><input type="text" className="input-field" required value={formData.title || ''} onChange={e => setFormData({...formData, title: e.target.value})} /></div>
+          <div className="form-group"><label>Category</label><input type="text" className="input-field" required value={formData.category || ''} onChange={e => setFormData({...formData, category: e.target.value})} /></div>
+          <div className="form-group"><label>Price ($)</label><input type="number" step="0.01" className="input-field" required value={formData.price || ''} onChange={e => setFormData({...formData, price: e.target.value})} /></div>
+          <div className="form-group"><label>Discount (%)</label><input type="number" className="input-field" value={formData.discount || ''} onChange={e => setFormData({...formData, discount: e.target.value})} /></div>
+          <div className="form-group"><label>Stock Quantity</label><input type="number" className="input-field" required value={formData.quantity || ''} onChange={e => setFormData({...formData, quantity: e.target.value})} /></div>
+          <div className="form-group"><label>SKU</label><input type="text" className="input-field" value={formData.sku || ''} onChange={e => setFormData({...formData, sku: e.target.value})} /></div>
+          <div className="form-group" style={{ gridColumn: '1 / -1' }}><label>Description (Optional)</label><textarea className="input-field" rows="3" value={formData.description || ''} onChange={e => setFormData({...formData, description: e.target.value})} /></div>
         </div>
         <div className="form-group">
           <label>Product Image</label>
@@ -148,7 +145,7 @@ const Catalog = () => {
   const handleUpdateProduct = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch(`http://localhost:8005/vendor/products/${editingProduct.id}`, {
+      const res = await fetch(`http://localhost:8006/vendor/products/${editingProduct.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -170,7 +167,7 @@ const Catalog = () => {
   const handleDelete = async (id) => {
     if (!window.confirm("Are you sure you want to delete this product?")) return;
     try {
-      const res = await fetch(`http://localhost:8005/vendor/products/${id}`, {
+      const res = await fetch(`http://localhost:8006/vendor/products/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
@@ -206,14 +203,14 @@ const Catalog = () => {
         <div>PRODUCT NAME</div>
         <div>DESCRIPTION & TAGS</div>
         <div>CATEGORY</div>
-        <div>PRICE / STOCK</div>
+        <div>PRICE / STOCK / SOLD</div>
         <div style={{ textAlign: 'center' }}>MARKETING</div>
       </div>
       {products.map(p => (
         <div className="table-row" key={p.id} style={{ gridTemplateColumns: '1.5fr 3fr 1fr 1fr 1fr', padding: '1.5rem', borderBottom: '1px solid rgba(255,255,255,0.05)', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
             <div style={{ background: '#fff', borderRadius: '12px', padding: '4px' }}>
-              <img src={p.picture_url ? `http://localhost:8005${p.picture_url}` : 'https://via.placeholder.com/60'} style={{ width: 60, height: 60, borderRadius: 8, objectFit: 'cover' }} alt="" />
+              <img src={p.picture_url ? `http://localhost:8006${p.picture_url}` : 'https://via.placeholder.com/60'} style={{ width: 60, height: 60, borderRadius: 8, objectFit: 'cover' }} alt="" />
             </div>
             <div>
               <div style={{ fontWeight: 600, fontSize: '1rem' }}>{p.title}</div>
@@ -275,16 +272,13 @@ const Catalog = () => {
             </h3>
             <form onSubmit={handleUpdateProduct}>
               <div className="grid grid-cols-2" style={{ gap: '1rem', marginBottom: '1rem' }}>
-                <div className="form-group"><label>Product Title</label><input type="text" className="input-field" required value={editingProduct.title} onChange={e => setEditingProduct({...editingProduct, title: e.target.value})} /></div>
-                <div className="form-group"><label>Category</label><input type="text" className="input-field" required value={editingProduct.category} onChange={e => setEditingProduct({...editingProduct, category: e.target.value})} /></div>
-                <div className="form-group"><label>Price ($)</label><input type="number" step="0.01" className="input-field" required value={editingProduct.price} onChange={e => setEditingProduct({...editingProduct, price: parseFloat(e.target.value)})} /></div>
-                <div className="form-group"><label>Discount (%)</label><input type="number" className="input-field" value={editingProduct.discount} onChange={e => setEditingProduct({...editingProduct, discount: parseFloat(e.target.value)})} /></div>
-                <div className="form-group"><label>Stock Quantity</label><input type="number" className="input-field" required value={editingProduct.quantity} onChange={e => setEditingProduct({...editingProduct, quantity: parseInt(e.target.value)})} /></div>
-                <div className="form-group"><label>SKU</label><input type="text" className="input-field" value={editingProduct.sku} onChange={e => setEditingProduct({...editingProduct, sku: e.target.value})} /></div>
-              </div>
-              <div className="form-group" style={{ marginBottom: '1rem' }}>
-                <label>Description</label>
-                <textarea className="input-field" rows="4" value={editingProduct.description} onChange={e => setEditingProduct({...editingProduct, description: e.target.value})} />
+                <div className="form-group"><label>Product Title</label><input type="text" className="input-field" required value={editingProduct.title || ''} onChange={e => setEditingProduct({...editingProduct, title: e.target.value})} /></div>
+                <div className="form-group"><label>Category</label><input type="text" className="input-field" required value={editingProduct.category || ''} onChange={e => setEditingProduct({...editingProduct, category: e.target.value})} /></div>
+                <div className="form-group"><label>Price ($)</label><input type="number" step="0.01" className="input-field" required value={editingProduct.price || ''} onChange={e => setEditingProduct({...editingProduct, price: parseFloat(e.target.value)})} /></div>
+                <div className="form-group"><label>Discount (%)</label><input type="number" className="input-field" value={editingProduct.discount || ''} onChange={e => setEditingProduct({...editingProduct, discount: parseFloat(e.target.value)})} /></div>
+                <div className="form-group"><label>Stock Quantity</label><input type="number" className="input-field" required value={editingProduct.quantity || ''} onChange={e => setEditingProduct({...editingProduct, quantity: parseInt(e.target.value)})} /></div>
+                <div className="form-group"><label>SKU</label><input type="text" className="input-field" value={editingProduct.sku || ''} onChange={e => setEditingProduct({...editingProduct, sku: e.target.value})} /></div>
+                <div className="form-group" style={{ gridColumn: '1 / -1' }}><label>Description</label><textarea className="input-field" rows="3" value={editingProduct.description || ''} onChange={e => setEditingProduct({...editingProduct, description: e.target.value})} /></div>
               </div>
               <div className="form-group" style={{ marginBottom: '1rem' }}>
                 <label>Product Status</label>
@@ -526,12 +520,12 @@ const Profile = () => {
       
       <form onSubmit={handleUpdate}>
         <div className="grid grid-cols-2" style={{ gap: '1.5rem' }}>
-          <div className="form-group"><label>First Name</label><input type="text" className="input-field" value={formData.first_name} onChange={e => setFormData({...formData, first_name: e.target.value})} /></div>
-          <div className="form-group"><label>Last Name</label><input type="text" className="input-field" value={formData.last_name} onChange={e => setFormData({...formData, last_name: e.target.value})} /></div>
-          <div className="form-group"><label>Phone Number</label><input type="tel" className="input-field" value={formData.phone_number} onChange={e => setFormData({...formData, phone_number: e.target.value})} /></div>
-          <div className="form-group"><label>GST / Tax Number</label><input type="text" className="input-field" value={formData.gst_number} onChange={e => setFormData({...formData, gst_number: e.target.value})} /></div>
-          <div className="form-group" style={{ gridColumn: '1 / -1' }}><label>Business Address</label><input type="text" className="input-field" value={formData.address} onChange={e => setFormData({...formData, address: e.target.value})} /></div>
-          <div className="form-group"><label>Business Category</label><input type="text" className="input-field" value={formData.business_category} onChange={e => setFormData({...formData, business_category: e.target.value})} /></div>
+          <div className="form-group"><label>First Name</label><input type="text" className="input-field" value={formData.first_name || ''} onChange={e => setFormData({...formData, first_name: e.target.value})} /></div>
+          <div className="form-group"><label>Last Name</label><input type="text" className="input-field" value={formData.last_name || ''} onChange={e => setFormData({...formData, last_name: e.target.value})} /></div>
+          <div className="form-group"><label>Phone Number</label><input type="tel" className="input-field" value={formData.phone_number || ''} onChange={e => setFormData({...formData, phone_number: e.target.value})} /></div>
+          <div className="form-group"><label>GST / Tax Number</label><input type="text" className="input-field" value={formData.gst_number || ''} onChange={e => setFormData({...formData, gst_number: e.target.value})} /></div>
+          <div className="form-group" style={{ gridColumn: '1 / -1' }}><label>Business Address</label><input type="text" className="input-field" value={formData.address || ''} onChange={e => setFormData({...formData, address: e.target.value})} /></div>
+          <div className="form-group"><label>Business Category</label><input type="text" className="input-field" value={formData.business_category || ''} onChange={e => setFormData({...formData, business_category: e.target.value})} /></div>
         </div>
         <button type="submit" className="btn btn-primary" style={{ marginTop: '2rem' }}>Save Profile Changes</button>
       </form>

@@ -92,25 +92,28 @@ const Login = () => {
     setForgotLoading(true);
     setForgotMessage('');
     try {
-      const response = await fetch('http://localhost:8005/auth/reset-password', {
+      const response = await fetch('http://localhost:8006/auth/reset-password', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ email: forgotEmail, new_password: newPassword })
+        body: JSON.stringify({ email: forgotEmail.trim(), new_password: newPassword })
       });
       const data = await response.json();
-      setForgotMessage(data.message || 'Password reset successfully.');
+      
       if (response.ok) {
+        setForgotMessage(data.message || 'Password reset successfully.');
         setTimeout(() => {
           setShowForgotModal(false);
           setForgotMessage('');
           setForgotEmail('');
           setNewPassword('');
         }, 3000);
+      } else {
+        setForgotMessage(`Error: ${data.detail || 'Failed to reset password.'}`);
       }
     } catch (err) {
-      setForgotMessage('An error occurred while resetting password.');
+      setForgotMessage('Error: An error occurred while resetting password.');
     } finally {
       setForgotLoading(false);
     }

@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Body
+from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
@@ -70,6 +71,7 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Oops, looks like this email is already registered!")
     
     # Hash the password before saving (security first!)
+    hashed_pw = auth.get_password_hash(user.password)
     new_user = models.User(
         email=user.email,
         hashed_password=hashed_pw,
@@ -207,12 +209,14 @@ def get_all_products(db: Session = Depends(get_db), admin: models.User = Depends
     res = []
     for p in products:
         vendor = db.query(models.User).filter(models.User.id == p.vendor_id).first()
+        sales = p.sales or 0
         res.append({
             "id": p.id,
             "title": p.title,
             "category": p.category,
             "price": p.price,
             "quantity": p.quantity,
+            "sales": sales,
             "status": p.status,
             "vendor_name": vendor.business_name or f"{vendor.first_name} {vendor.last_name}" if vendor else "Unknown Vendor",
             "picture_url": p.picture_url,
@@ -233,16 +237,12 @@ def get_platform_analytics(db: Session = Depends(get_db), admin: models.User = D
     for v in vendors:
         v_products = [p for p in products if p.vendor_id == v.id]
         
-        # Compute mock revenue deterministically
-        import random
-        random.seed(v.id + 30)
         v_revenue = 0
         v_orders = 0
         for p in v_products:
-            sales = random.randint(0, 50)
+            sales = p.sales or 0
             v_revenue += sales * p.price
             v_orders += sales
-        random.seed()
         
         total_revenue += v_revenue
         
@@ -315,14 +315,15 @@ def get_vendor_notifications(db: Session = Depends(get_db), vendor: models.User 
     return activities
 
 # --- Vendor Profile ---
-@app.put("/vendor/profile")
+@app.put("/vendor/profile", response_model=schemas.User)
 def update_vendor_profile(
     update_data: dict = Body(...),
     db: Session = Depends(get_db), 
     vendor: models.User = Depends(auth.get_current_active_vendor)
 ):
+    allowed_fields = {"first_name", "last_name", "phone_number", "address", "business_name", "business_category", "gst_number", "profile_picture_url"}
     for key, value in update_data.items():
-        if hasattr(vendor, key):
+        if key in allowed_fields and hasattr(vendor, key):
             setattr(vendor, key, value)
     db.commit()
     db.refresh(vendor)
@@ -335,15 +336,22 @@ async def create_product(
     category: str = Form(...),
     price: float = Form(...),
     quantity: int = Form(...),
-    discount: float = Form(0.0),
-    sku: str = Form(None),
-    status: str = Form("active"),
-    description: str = Form(""),
-    image: UploadFile = File(None),
+    discount: Optional[float] = Form(0.0),
+    sku: Optional[str] = Form(None),
+    status: Optional[str] = Form("active"),
+    description: Optional[str] = Form(""),
+    image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db), 
     vendor: models.User = Depends(auth.get_current_active_vendor)
 ):
     picture_url = None
+    
+    # Ensure defaults for optional fields
+    if discount is None: discount = 0.0
+    if sku is None: sku = ""
+    if status is None: status = "active"
+    if description is None: description = ""
+    
     if image:
         file_ext = image.filename.split('.')[-1]
         file_name = f"{uuid.uuid4()}.{file_ext}"
@@ -360,11 +368,34 @@ async def create_product(
         discount=discount, sku=sku, status=status,
         description=final_desc, tagline=ai_content['tagline'],
         marketing_email=ai_content['marketing_email'],
-        picture_url=picture_url, vendor_id=vendor.id
+        picture_url=picture_url, vendor_id=vendor.id,
+        sales=0
     )
-    db.add(db_product)
-    db.commit()
-    db.refresh(db_product)
+    
+    # Automatically generate sample data for this website
+    import random
+    sample_sales = random.randint(10, 50)
+    db_product.sales = sample_sales
+    
+    try:
+        db.add(db_product)
+        db.commit()
+        db.refresh(db_product)
+        
+        # Generate a fake order to populate the vendor's revenue
+        if sample_sales > 0:
+            fake_order = models.Order(
+                amount=sample_sales * price,
+                vendor_id=vendor.id
+            )
+            db.add(fake_order)
+            db.commit()
+    except Exception as e:
+        import traceback
+        with open("crash.txt", "w") as f:
+            f.write(traceback.format_exc())
+        raise e
+    
     return db_product
 
 @app.get("/vendor/products", response_model=list[schemas.Product])
@@ -438,15 +469,12 @@ def get_advanced_analytics(
     if not cats:
         cats = ["General"]
     
-    # Seed random so data is stable per vendor and time range
-    random.seed(vendor.id + len(time_range) + (len(start_date) if start_date else 0))
-    
     # Generate product sales first to get accurate revenue
     product_sales = []
     generated_revenue = 0
     generated_orders = 0
     for p in products:
-        sales = random.randint(0, 50)
+        sales = p.sales or 0
         prod_rev = sales * p.price
         generated_revenue += prod_rev
         generated_orders += sales

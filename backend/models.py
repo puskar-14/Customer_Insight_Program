@@ -50,6 +50,7 @@ class Product(Base):
     price = Column(Float)
     discount = Column(Float, default=0.0)
     quantity = Column(Integer)
+    sales = Column(Integer, default=0)
     sku = Column(String, nullable=True)
     status = Column(String, default="active") # active, disabled
     

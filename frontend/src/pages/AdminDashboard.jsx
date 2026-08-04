@@ -248,7 +248,7 @@ const ProductDetailsModal = ({ product, onClose }) => {
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '2rem', marginBottom: '2rem' }}>
           <div>
-            <img src={product.picture_url ? `http://localhost:8005${product.picture_url}` : 'https://via.placeholder.com/200'} style={{ width: '100%', borderRadius: 12, objectFit: 'cover', aspectRatio: '1/1', border: '1px solid var(--border-color)' }} alt="" />
+            <img src={product.picture_url ? `http://localhost:8006${product.picture_url}` : 'https://via.placeholder.com/200'} style={{ width: '100%', borderRadius: 12, objectFit: 'cover', aspectRatio: '1/1', border: '1px solid var(--border-color)' }} alt="" />
           </div>
           <div>
             <h3 style={{ fontSize: '1.5rem', margin: '0 0 0.5rem 0' }}>{product.title}</h3>
@@ -336,18 +336,19 @@ const AllProducts = () => {
         <Package size={20} style={{ color: '#8b5cf6' }} />
         <h3 style={{ margin: 0, fontSize: '1.25rem' }}>Platform Products</h3>
       </div>
-      <div className="table-header" style={{ gridTemplateColumns: '2fr 1.5fr 1fr 1fr 1fr 80px' }}>
+      <div className="table-header" style={{ gridTemplateColumns: '2fr 1.5fr 1fr 1fr 1fr 1fr 80px' }}>
         <div>PRODUCT & VENDOR</div>
         <div>CATEGORY</div>
         <div>PRICE</div>
         <div>STOCK</div>
+        <div>SOLD</div>
         <div>STATUS</div>
         <div style={{ textAlign: 'center' }}>ACTION</div>
       </div>
       {products.map(p => (
-        <div className="table-row" key={p.id} style={{ gridTemplateColumns: '2fr 1.5fr 1fr 1fr 1fr 80px' }}>
+        <div className="table-row" key={p.id} style={{ gridTemplateColumns: '2fr 1.5fr 1fr 1fr 1fr 1fr 80px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <img src={p.picture_url ? `http://localhost:8005${p.picture_url}` : 'https://via.placeholder.com/40'} style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover' }} alt="" />
+            <img src={p.picture_url ? `http://localhost:8006${p.picture_url}` : 'https://via.placeholder.com/40'} style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover' }} alt="" />
             <div>
               <div style={{ fontWeight: 600 }}>{p.title}</div>
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>By: {p.vendor_name}</div>
@@ -356,6 +357,7 @@ const AllProducts = () => {
           <div>{p.category}</div>
           <div style={{ fontWeight: 600 }}>${p.price.toFixed(2)}</div>
           <div>{p.quantity > 0 ? p.quantity : <span style={{ color: 'var(--danger)' }}>Out of Stock</span>}</div>
+          <div>{p.sales || 0}</div>
           <div>
             <span className={`badge ${p.status === 'active' ? 'badge-active' : 'badge-warning'}`}>{p.status}</span>
           </div>

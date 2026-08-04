@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 // The URL where our FastAPI backend is running
-const API_URL = 'http://localhost:8005';
+const API_URL = 'http://localhost:8006';
 
 // We use Zustand for global state management because it's much cleaner than Redux!
 const useStore = create((set, get) => ({
