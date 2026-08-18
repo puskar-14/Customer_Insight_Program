@@ -33,7 +33,7 @@ class User(Base):
     joined_date = Column(DateTime, default=datetime.datetime.utcnow)
     
     products = relationship("Product", back_populates="vendor")
-    orders = relationship("Order", back_populates="vendor")
+    orders = relationship("Order", back_populates="vendor", foreign_keys="[Order.vendor_id]")
     activities = relationship("VendorActivity", back_populates="vendor")
     reviews = relationship("Review", back_populates="customer")
 
@@ -62,6 +62,7 @@ class Product(Base):
     marketing_email = Column(String, nullable=True)
     
     rating = Column(Float, default=0.0)
+    low_stock_threshold = Column(Integer, default=10)
     
     vendor_id = Column(Integer, ForeignKey("users.id"))
     vendor = relationship("User", back_populates="products")
@@ -74,7 +75,12 @@ class Order(Base):
     amount = Column(Float)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     vendor_id = Column(Integer, ForeignKey("users.id"))
-    vendor = relationship("User", back_populates="orders")
+    customer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    product_name = Column(String, nullable=True)
+    quantity = Column(Integer, default=1)
+    status = Column(String, default="Completed")
+    
+    vendor = relationship("User", back_populates="orders", foreign_keys=[vendor_id])
     
 class Review(Base):
     __tablename__ = "reviews"
@@ -82,6 +88,9 @@ class Review(Base):
     id = Column(Integer, primary_key=True, index=True)
     rating = Column(Integer) # 1-5
     comment = Column(String, nullable=True)
+    pros = Column(String, nullable=True)
+    cons = Column(String, nullable=True)
+    sentiment_score = Column(Float, default=0.0) # -1.0 to 1.0 or 0 to 100%
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     
     product_id = Column(Integer, ForeignKey("products.id"))

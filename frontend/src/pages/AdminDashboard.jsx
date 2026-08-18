@@ -248,7 +248,15 @@ const ProductDetailsModal = ({ product, onClose }) => {
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '2rem', marginBottom: '2rem' }}>
           <div>
-            <img src={product.picture_url ? `http://localhost:8006${product.picture_url}` : 'https://via.placeholder.com/200'} style={{ width: '100%', borderRadius: 12, objectFit: 'cover', aspectRatio: '1/1', border: '1px solid var(--border-color)' }} alt="" />
+            <img 
+              src={product.picture_url ? `http://localhost:8010${product.picture_url}` : 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400'} 
+              style={{ width: '100%', borderRadius: 12, objectFit: 'cover', aspectRatio: '1/1', border: '1px solid var(--border-color)' }} 
+              alt={product.title}
+              onError={(e) => {
+                e.target.onerror = null;
+                e.target.src = 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400';
+              }}
+            />
           </div>
           <div>
             <h3 style={{ fontSize: '1.5rem', margin: '0 0 0.5rem 0' }}>{product.title}</h3>
@@ -348,7 +356,15 @@ const AllProducts = () => {
       {products.map(p => (
         <div className="table-row" key={p.id} style={{ gridTemplateColumns: '2fr 1.5fr 1fr 1fr 1fr 1fr 80px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <img src={p.picture_url ? `http://localhost:8006${p.picture_url}` : 'https://via.placeholder.com/40'} style={{ width: 40, height: 40, borderRadius: 8, objectFit: 'cover' }} alt="" />
+            <img 
+              src={p.picture_url ? `http://localhost:8010${p.picture_url}` : 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=100'} 
+              style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--border-color)' }} 
+              alt={p.title} 
+              onError={(e) => {
+                e.target.onerror = null;
+                e.target.src = 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=100';
+              }}
+            />
             <div>
               <div style={{ fontWeight: 600 }}>{p.title}</div>
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>By: {p.vendor_name}</div>
@@ -524,6 +540,153 @@ const PlatformAnalytics = () => {
   );
 };
 
+// --- Customer Segmentation Analytics ---
+const CustomerSegmentation = () => {
+  const { apiFetch } = useStore();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    apiFetch('/admin/analytics/customer-segments')
+      .then(res => setData(res))
+      .catch(err => console.error(err))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading || !data) return <div>Loading SQL customer segments...</div>;
+
+  return (
+    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      <div>
+        <h2 className="gradient-text" style={{ margin: 0 }}>SQL-Based Customer Segmentation</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
+          RFM and total spend segmentation grouping customers into actionable value tiers.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-4">
+        {data.segments?.map((seg, idx) => (
+          <div key={idx} className="glass-panel" style={{ borderTop: `4px solid ${idx === 0 ? '#10b981' : idx === 1 ? '#38bdf8' : idx === 2 ? '#f59e0b' : '#ef4444'}` }}>
+            <h4 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>{seg.name.toUpperCase()}</h4>
+            <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.8rem' }}>{seg.count} <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>({seg.percentage}%)</span></h2>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+              <div>Total Spent: <strong style={{ color: 'var(--success)' }}>${seg.revenue.toFixed(2)}</strong></div>
+              <div>Avg. Spend: <strong>${seg.avg_spend.toFixed(2)}</strong></div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="glass-panel">
+        <h3 style={{ marginBottom: '1.25rem' }}>Segment Breakdown & Target Retention Strategies</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {data.segments?.map((seg, idx) => (
+            <div key={idx} style={{ padding: '1.25rem', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '1.1rem', color: 'var(--primary-color)' }}>{seg.name}</strong>
+                <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>{seg.revenue_share}% Platform Revenue</span>
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: '0 0 0.75rem 0' }}>
+                {idx === 0 ? '🎯 Strategy: Reward with exclusive VIP perks, personal account manager, and early product drops.' :
+                 idx === 1 ? '🎯 Strategy: Encourage repeat frequency with milestone discounts and free shipping perks.' :
+                 idx === 2 ? '🎯 Strategy: Onboarding nurture sequences and product discovery recommendations.' :
+                 '🎯 Strategy: Re-engagement campaigns with win-back discount vouchers.'}
+              </p>
+              {seg.sample_customers?.length > 0 && (
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {seg.sample_customers.map((c, i) => (
+                    <span key={i} style={{ background: 'rgba(255,255,255,0.05)', padding: '0.2rem 0.6rem', borderRadius: '6px', fontSize: '0.8rem' }}>
+                      👤 {c.name} (${c.total_spent})
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- Platform Stock Health Monitor ---
+const StockHealth = () => {
+  const { apiFetch } = useStore();
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    apiFetch('/admin/inventory')
+      .then(res => setHealth(res))
+      .catch(err => console.error(err))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading || !health) return <div>Loading stock health records...</div>;
+
+  return (
+    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      <div>
+        <h2 className="gradient-text" style={{ margin: 0 }}>Platform Inventory Health & Stockout Monitor</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
+          System-wide catalog inventory valuation and low-stock vendor notifications.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-4">
+        <div className="glass-panel text-center">
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>TOTAL PRODUCTS</p>
+          <h2 style={{ margin: 0, fontSize: '2rem' }}>{health.total_catalog_products}</h2>
+        </div>
+        <div className="glass-panel text-center">
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>PLATFORM STOCK UNITS</p>
+          <h2 style={{ margin: 0, fontSize: '2rem', color: 'var(--primary-color)' }}>{health.total_stock_units}</h2>
+        </div>
+        <div className="glass-panel text-center">
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>CATALOG VALUATION</p>
+          <h2 style={{ margin: 0, fontSize: '2rem', color: 'var(--success)' }}>${health.total_inventory_valuation?.toFixed(2)}</h2>
+        </div>
+        <div className="glass-panel text-center">
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>OUT OF STOCK ITEMS</p>
+          <h2 style={{ margin: 0, fontSize: '2rem', color: health.out_of_stock_count > 0 ? '#ef4444' : 'var(--text-main)' }}>
+            {health.out_of_stock_count}
+          </h2>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+        <div className="glass-panel">
+          <h3 style={{ color: '#ef4444', marginBottom: '1rem' }}>⚠️ Out of Stock Items</h3>
+          {health.out_of_stock_items?.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)' }}>No items currently out of stock.</p>
+          ) : (
+            health.out_of_stock_items?.map((item, idx) => (
+              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.75rem 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                <span><strong>{item.title}</strong> (By {item.vendor_name})</span>
+                <span style={{ color: '#ef4444', fontWeight: 700 }}>0 Units</span>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="glass-panel">
+          <h3 style={{ color: '#f59e0b', marginBottom: '1rem' }}>⚠️ Low Stock Warnings (&le; 10 Units)</h3>
+          {health.low_stock_items?.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)' }}>All catalog products have healthy stock.</p>
+          ) : (
+            health.low_stock_items?.map((item, idx) => (
+              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.75rem 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                <span><strong>{item.title}</strong> (By {item.vendor_name})</span>
+                <span style={{ color: '#f59e0b', fontWeight: 700 }}>{item.quantity} Units Left</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const AdminDashboard = () => {
   return (
     <Routes>
@@ -531,8 +694,11 @@ const AdminDashboard = () => {
       <Route path="/activity" element={<VendorActivityLog />} />
       <Route path="/products" element={<AllProducts />} />
       <Route path="/analytics" element={<PlatformAnalytics />} />
+      <Route path="/segments" element={<CustomerSegmentation />} />
+      <Route path="/stock-health" element={<StockHealth />} />
     </Routes>
   );
 };
 
 export default AdminDashboard;
+
