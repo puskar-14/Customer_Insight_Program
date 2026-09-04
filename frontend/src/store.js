@@ -10,6 +10,99 @@ const useStore = create((set, get) => ({
   isLoading: false,
   error: null,
 
+  // Persistent Shopping Bag / Cart State
+  cart: (() => {
+    try {
+      const saved = localStorage.getItem('shopsense_cart');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  })(),
+  isCartOpen: false,
+  setIsCartOpen: (isOpen) => set({ isCartOpen: isOpen }),
+
+  addToCart: (product, openDrawer = true) => {
+    if (!product) return;
+    const { cart } = get();
+    const existing = cart.find((item) => item.product_id === product.id);
+    let updatedCart;
+    if (existing) {
+      if (existing.quantity >= product.quantity) {
+        alert(`Only ${product.quantity} items available in stock!`);
+        return;
+      }
+      updatedCart = cart.map((item) =>
+        item.product_id === product.id
+          ? { ...item, quantity: item.quantity + 1 }
+          : item
+      );
+    } else {
+      updatedCart = [
+        ...cart,
+        {
+          product_id: product.id,
+          title: product.title,
+          price: product.price,
+          discount: product.discount || 0,
+          picture_url: product.picture_url,
+          vendor_name: product.vendor_name,
+          max_stock: product.quantity,
+          quantity: 1,
+        },
+      ];
+    }
+    try {
+      localStorage.setItem('shopsense_cart', JSON.stringify(updatedCart));
+    } catch (e) {
+      console.error('Failed to save cart to localStorage:', e);
+    }
+    set({ cart: updatedCart, ...(openDrawer ? { isCartOpen: true } : {}) });
+  },
+
+  updateQuantity: (productId, delta) => {
+    const { cart } = get();
+    const updatedCart = cart
+      .map((item) => {
+        if (item.product_id === productId) {
+          const newQty = item.quantity + delta;
+          if (newQty > item.max_stock) {
+            alert(`Only ${item.max_stock} units left in stock!`);
+            return item;
+          }
+          return newQty > 0 ? { ...item, quantity: newQty } : null;
+        }
+        return item;
+      })
+      .filter(Boolean);
+    try {
+      localStorage.setItem('shopsense_cart', JSON.stringify(updatedCart));
+    } catch (e) {
+      console.error('Failed to save cart to localStorage:', e);
+    }
+    set({ cart: updatedCart });
+  },
+
+  removeFromCart: (productId) => {
+    const { cart } = get();
+    const updatedCart = cart.filter((item) => item.product_id !== productId);
+    try {
+      localStorage.setItem('shopsense_cart', JSON.stringify(updatedCart));
+    } catch (e) {
+      console.error('Failed to save cart to localStorage:', e);
+    }
+    set({ cart: updatedCart });
+  },
+
+  clearCart: () => {
+    try {
+      localStorage.removeItem('shopsense_cart');
+    } catch (e) {
+      console.error(e);
+    }
+    set({ cart: [] });
+  },
+
   setToken: (token) => {
     localStorage.setItem('token', token);
     set({ token });

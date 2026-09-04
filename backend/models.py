@@ -63,6 +63,7 @@ class Product(Base):
     
     rating = Column(Float, default=0.0)
     low_stock_threshold = Column(Integer, default=10)
+    profit_margin = Column(Float, default=25.0) # percentage margin e.g. 25.0%
     
     vendor_id = Column(Integer, ForeignKey("users.id"))
     vendor = relationship("User", back_populates="products")
@@ -72,6 +73,7 @@ class Order(Base):
     __tablename__ = "orders"
     
     id = Column(Integer, primary_key=True, index=True)
+    order_group_id = Column(String(50), index=True, nullable=True)
     amount = Column(Float)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     vendor_id = Column(Integer, ForeignKey("users.id"))
@@ -79,6 +81,8 @@ class Order(Base):
     product_name = Column(String, nullable=True)
     quantity = Column(Integer, default=1)
     status = Column(String, default="Completed")
+    payment_method = Column(String, default="upi")
+    return_reason = Column(String, nullable=True)
     
     vendor = relationship("User", back_populates="orders", foreign_keys=[vendor_id])
     

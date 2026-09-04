@@ -99,7 +99,7 @@ const VendorDirectory = () => {
               <div style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>{vendor.phone_number}</div>
             </div>
             <div style={{ fontWeight: 600 }}>{vendor.products} listed</div>
-            <div style={{ color: 'var(--success)', fontWeight: 600 }}>${(vendor.revenue || 0).toFixed(2)}</div>
+            <div style={{ color: 'var(--success)', fontWeight: 600 }}>₹{(vendor.revenue || 0).toFixed(2)}</div>
             <div>
               ⭐ {vendor.rating > 0 ? (vendor.rating || 0).toFixed(1) : 'No rating'}
             </div>
@@ -260,7 +260,7 @@ const ProductDetailsModal = ({ product, onClose }) => {
           </div>
           <div>
             <h3 style={{ fontSize: '1.5rem', margin: '0 0 0.5rem 0' }}>{product.title}</h3>
-            <div style={{ fontSize: '1.1rem', color: 'var(--primary)', fontWeight: 'bold', marginBottom: '1rem' }}>${product.price.toFixed(2)}</div>
+            <div style={{ fontSize: '1.1rem', color: 'var(--primary)', fontWeight: 'bold', marginBottom: '1rem' }}>₹{product.price.toFixed(2)}</div>
             
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
               <div className="stat-card" style={{ padding: '1rem' }}>
@@ -371,7 +371,7 @@ const AllProducts = () => {
             </div>
           </div>
           <div>{p.category}</div>
-          <div style={{ fontWeight: 600 }}>${p.price.toFixed(2)}</div>
+          <div style={{ fontWeight: 600 }}>₹{p.price.toFixed(2)}</div>
           <div>{p.quantity > 0 ? p.quantity : <span style={{ color: 'var(--danger)' }}>Out of Stock</span>}</div>
           <div>{p.sales || 0}</div>
           <div>
@@ -423,7 +423,7 @@ const VendorDetailsModal = ({ vendor, onClose }) => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <div className="glass-panel text-center" style={{ padding: '1rem' }}>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600, margin: '0 0 0.5rem 0' }}>TOTAL REVENUE GENERATED</p>
-                <div className="text-gradient" style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>${vendor.revenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+                <div className="text-gradient" style={{ fontSize: '1.5rem', fontWeight: 'bold' }}>₹{vendor.revenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 <div className="glass-panel text-center" style={{ padding: '1rem' }}>
@@ -457,7 +457,7 @@ const VendorDetailsModal = ({ vendor, onClose }) => {
           {vendor.products_list && vendor.products_list.map((p, i) => (
             <div key={i} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '1rem', padding: '1rem', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
               <div>{p.title}</div>
-              <div>${p.price.toFixed(2)}</div>
+              <div>₹{p.price.toFixed(2)}</div>
               <div>{p.stock > 0 ? p.stock : <span style={{ color: 'var(--danger)' }}>Out of Stock</span>}</div>
             </div>
           ))}
@@ -489,7 +489,7 @@ const PlatformAnalytics = () => {
       <div className="grid grid-cols-4">
         <div className="glass-panel text-center">
           <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>PLATFORM REVENUE</p>
-          <h2 style={{ margin: 0, fontSize: '2rem' }} className="text-gradient">${data.summary.total_revenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</h2>
+          <h2 style={{ margin: 0, fontSize: '2rem' }} className="text-gradient">₹{data.summary.total_revenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</h2>
         </div>
         <div className="glass-panel text-center">
           <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>TOTAL ORDERS</p>
@@ -524,7 +524,7 @@ const PlatformAnalytics = () => {
             </div>
             <div>{v.products}</div>
             <div>{v.orders}</div>
-            <div style={{ fontWeight: 600, color: 'var(--success)' }}>${v.revenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+            <div style={{ fontWeight: 600, color: 'var(--success)' }}>₹{v.revenue.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
             <div><span className={`badge ${v.status === 'active' ? 'badge-active' : 'badge-warning'}`}>{v.status}</span></div>
             <div style={{ display: 'flex', justifyContent: 'center' }}>
               <button className="btn" style={{ padding: '0.5rem' }} title="View Details" onClick={() => setSelectedVendor(v)}>
@@ -570,8 +570,8 @@ const CustomerSegmentation = () => {
             <h4 style={{ margin: '0 0 0.5rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>{seg.name.toUpperCase()}</h4>
             <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.8rem' }}>{seg.count} <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>({seg.percentage}%)</span></h2>
             <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-              <div>Total Spent: <strong style={{ color: 'var(--success)' }}>${seg.revenue.toFixed(2)}</strong></div>
-              <div>Avg. Spend: <strong>${seg.avg_spend.toFixed(2)}</strong></div>
+              <div>Total Spent: <strong style={{ color: 'var(--success)' }}>₹{seg.revenue.toFixed(2)}</strong></div>
+              <div>Avg. Spend: <strong>₹{seg.avg_spend.toFixed(2)}</strong></div>
             </div>
           </div>
         ))}
@@ -596,7 +596,7 @@ const CustomerSegmentation = () => {
                 <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                   {seg.sample_customers.map((c, i) => (
                     <span key={i} style={{ background: 'rgba(255,255,255,0.05)', padding: '0.2rem 0.6rem', borderRadius: '6px', fontSize: '0.8rem' }}>
-                      👤 {c.name} (${c.total_spent})
+                      👤 {c.name} (₹{c.total_spent})
                     </span>
                   ))}
                 </div>
@@ -644,7 +644,7 @@ const StockHealth = () => {
         </div>
         <div className="glass-panel text-center">
           <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>CATALOG VALUATION</p>
-          <h2 style={{ margin: 0, fontSize: '2rem', color: 'var(--success)' }}>${health.total_inventory_valuation?.toFixed(2)}</h2>
+          <h2 style={{ margin: 0, fontSize: '2rem', color: 'var(--success)' }}>₹{health.total_inventory_valuation?.toFixed(2)}</h2>
         </div>
         <div className="glass-panel text-center">
           <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>OUT OF STOCK ITEMS</p>

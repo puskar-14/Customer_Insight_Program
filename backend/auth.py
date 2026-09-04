@@ -1,7 +1,8 @@
 import jwt
 import bcrypt
 from datetime import datetime, timedelta
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 import database, models
@@ -12,7 +13,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # Tokens expire in 1 day
 
 # Tells FastAPI where clients should send their username and password to get a token
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
 
 def verify_password(plain_password, hashed_password):
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
@@ -30,17 +31,33 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(database.get_db)):
-    """Verifies the JWT token and fetches the current user from the database."""
+def get_current_user(
+    request: Request,
+    token: str | None = Depends(oauth2_scheme), 
+    db: Session = Depends(database.get_db)
+):
+    """Verifies the JWT token from Authorization header or query param and fetches current user."""
+    active_token = token
+    if not active_token:
+        # Check query param if Authorization header was not sent (e.g. browser downloads)
+        active_token = request.query_params.get("token")
+    if not active_token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            active_token = auth_header.split(" ")[1]
+            
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Oops, we couldn't validate your credentials. Please log in again.",
         headers={"WWW-Authenticate": "Bearer"},
     )
     
+    if not active_token:
+        raise credentials_exception
+
     try:
         # Decode the token to see who it belongs to
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(active_token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception

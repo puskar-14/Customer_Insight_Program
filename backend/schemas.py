@@ -62,6 +62,7 @@ class ProductBase(BaseModel):
     tagline: Optional[str] = None
     marketing_email: Optional[str] = None
     rating: Optional[float] = 0.0
+    profit_margin: Optional[float] = 25.0
 
 class ProductCreate(ProductBase):
     pass

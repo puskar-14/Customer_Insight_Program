@@ -1,5 +1,8 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Body
-from typing import Optional
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Body, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import Response
+from typing import Optional, List, Dict
+import csv
+import io
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordRequestForm
@@ -18,6 +21,39 @@ logger = logging.getLogger(__name__)
 
 # Make sure our database tables actually exist before we do anything
 models.Base.metadata.create_all(bind=database.engine)
+
+# ============================================================
+# WebSockets Real-Time Sales Notification Hub
+# ============================================================
+class ConnectionManager:
+    def __init__(self):
+        # Map vendor_id -> list of active WebSocket connections
+        self.active_connections: Dict[int, List[WebSocket]] = {}
+
+    async def connect(self, vendor_id: int, websocket: WebSocket):
+        await websocket.accept()
+        if vendor_id not in self.active_connections:
+            self.active_connections[vendor_id] = []
+        self.active_connections[vendor_id].append(websocket)
+        logger.info(f"Vendor #{vendor_id} connected to WebSocket. Total connections: {len(self.active_connections[vendor_id])}")
+
+    def disconnect(self, vendor_id: int, websocket: WebSocket):
+        if vendor_id in self.active_connections:
+            if websocket in self.active_connections[vendor_id]:
+                self.active_connections[vendor_id].remove(websocket)
+            if not self.active_connections[vendor_id]:
+                del self.active_connections[vendor_id]
+        logger.info(f"Vendor #{vendor_id} disconnected from WebSocket.")
+
+    async def broadcast_sale(self, vendor_id: int, message: dict):
+        if vendor_id in self.active_connections:
+            for connection in self.active_connections[vendor_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception as e:
+                    logger.warning(f"Error broadcasting to vendor {vendor_id}: {e}")
+
+ws_manager = ConnectionManager()
 
 app = FastAPI(title="Shop Sense API v3", description="The engine powering our multi-vendor platform.")
 
@@ -56,6 +92,7 @@ def startup_event():
         db.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'Completed';"))
         
         db.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER DEFAULT 10;"))
+        db.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS profit_margin FLOAT DEFAULT 25.0;"))
         
         db.execute(text("ALTER TABLE reviews ADD COLUMN IF NOT EXISTS pros VARCHAR;"))
         db.execute(text("ALTER TABLE reviews ADD COLUMN IF NOT EXISTS cons VARCHAR;"))
@@ -190,8 +227,13 @@ def checkout(
     if not cart:
         raise HTTPException(status_code=400, detail="Cart is empty!")
     
+    # Generate unique master order group ID for this entire cart checkout session
+    import time
+    order_group_id = f"OD-{int(time.time() * 1000) % 100000000:08d}"
+    
     orders_created = []
     total_amount = 0.0
+    total_quantity = 0
     
     for item in cart:
         product = db.query(models.Product).filter(models.Product.id == item["product_id"]).first()
@@ -207,17 +249,21 @@ def checkout(
         product.quantity -= qty
         product.sales = (product.sales or 0) + qty
         
+        pay_method = item.get("payment_method") or "upi"
         # Create order for the vendor & customer history
         order = models.Order(
+            order_group_id=order_group_id,
             amount=item_total,
             vendor_id=product.vendor_id,
             customer_id=customer.id,
             product_name=product.title,
             quantity=qty,
-            status="Completed"
+            status="Completed",
+            payment_method=pay_method
         )
         db.add(order)
         total_amount += item_total
+        total_quantity += qty
         orders_created.append({
             "product": product.title,
             "quantity": qty,
@@ -226,11 +272,36 @@ def checkout(
     
     db.commit()
     
+    # Broadcast real-time sales alert to active vendor WebSockets
+    import asyncio
+    for item in orders_created:
+        # Find vendor for this item
+        matched_prod = db.query(models.Product).filter(models.Product.title == item["product"]).first()
+        if matched_prod:
+            sale_event = {
+                "type": "NEW_ORDER",
+                "product_name": item["product"],
+                "quantity": item["quantity"],
+                "amount": item["subtotal"],
+                "customer_name": f"{customer.first_name or 'Customer'} {customer.last_name or ''}".strip(),
+                "timestamp": datetime.utcnow().strftime("%I:%M %p")
+            }
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(ws_manager.broadcast_sale(matched_prod.vendor_id, sale_event))
+            except Exception as e:
+                logger.warning(f"Failed to schedule WS sale broadcast: {e}")
+    
     return {
         "message": "Order placed successfully! 🎉",
+        "order_id": order_group_id,
+        "order_group_id": order_group_id,
         "total": round(total_amount, 2),
         "items": orders_created,
-        "order_count": len(orders_created)
+        "order_count": 1, # Exactly 1 unified order placed!
+        "total_quantity": total_quantity,
+        "payment_method": cart[0].get("payment_method", "upi") if cart else "upi"
     }
 
 @app.get("/shop/orders")
@@ -238,21 +309,127 @@ def get_customer_orders(
     db: Session = Depends(get_db),
     customer: models.User = Depends(auth.get_current_user)
 ):
-    """Get order history for the logged-in customer."""
-    orders = db.query(models.Order).filter(models.Order.customer_id == customer.id).order_by(models.Order.created_at.desc()).all()
-    res = []
+    """Get order history for the logged-in customer, consolidated into unified master orders."""
+    orders = db.query(models.Order).filter(models.Order.customer_id == customer.id).order_by(models.Order.created_at.desc(), models.Order.id.desc()).all()
+    
+    # Group items by order_group_id (falling back to f"OD-{o.id:04d}" if not set)
+    from collections import OrderedDict
+    grouped = OrderedDict()
+    
     for o in orders:
-        vendor = db.query(models.User).filter(models.User.id == o.vendor_id).first()
+        gid = getattr(o, "order_group_id", None) or f"OD-{o.id:04d}"
+        if gid not in grouped:
+            grouped[gid] = []
+        grouped[gid].append(o)
+        
+    res = []
+    for gid, group_orders in grouped.items():
+        items_list = []
+        total_amount = 0.0
+        total_qty = 0
+        
+        # Primary order attributes from the latest/first item in the group
+        primary = group_orders[0]
+        
+        # Collect statuses across items to determine overall order status
+        item_statuses = [o.status for o in group_orders]
+        if all(s == "Returned" for s in item_statuses):
+            overall_status = "Returned"
+        elif any(s == "Replaced" for s in item_statuses):
+            overall_status = "Replaced"
+        elif any(s == "Returned" for s in item_statuses):
+            overall_status = "Partial Return"
+        else:
+            overall_status = primary.status or "Completed"
+            
+        for o in group_orders:
+            vendor = db.query(models.User).filter(models.User.id == o.vendor_id).first()
+            prod = None
+            if o.product_name:
+                prod = db.query(models.Product).filter(
+                    models.Product.title == o.product_name, 
+                    models.Product.vendor_id == o.vendor_id
+                ).first()
+                if not prod:
+                    prod = db.query(models.Product).filter(models.Product.title == o.product_name).first()
+
+            qty = o.quantity or 1
+            amt = round(o.amount, 2)
+            total_amount += amt
+            total_qty += qty
+            
+            items_list.append({
+                "id": o.id,
+                "order_group_id": gid,
+                "product_id": prod.id if prod else None,
+                "product_name": o.product_name or "Order Item",
+                "quantity": qty,
+                "amount": amt,
+                "status": o.status or "Completed",
+                "payment_method": getattr(o, "payment_method", "upi") or "upi",
+                "return_reason": getattr(o, "return_reason", None),
+                "created_at": o.created_at.strftime("%b %d, %Y %I:%M %p") if o.created_at else "",
+                "created_at_iso": o.created_at.isoformat() if o.created_at else None,
+                "picture_url": prod.picture_url if prod else None,
+                "category": prod.category if prod else "General",
+                "price": prod.price if prod else round(amt / qty, 2),
+                "discount": prod.discount if prod else 0,
+                "vendor_name": vendor.business_name or f"{vendor.first_name or ''} {vendor.last_name or ''}".strip() if vendor else "Verified Vendor"
+            })
+            
         res.append({
-            "id": o.id,
-            "product_name": o.product_name or "Order Item",
-            "quantity": o.quantity or 1,
-            "amount": round(o.amount, 2),
-            "status": o.status or "Completed",
-            "created_at": o.created_at.strftime("%b %d, %Y %I:%M %p") if o.created_at else "",
-            "vendor_name": vendor.business_name or f"{vendor.first_name or ''} {vendor.last_name or ''}".strip() if vendor else "Verified Vendor"
+            "order_group_id": gid,
+            "id": primary.id,
+            "display_order_id": gid,
+            "created_at": primary.created_at.strftime("%b %d, %Y %I:%M %p") if primary.created_at else "",
+            "created_at_iso": primary.created_at.isoformat() if primary.created_at else None,
+            "amount": round(total_amount, 2),
+            "total_amount": round(total_amount, 2),
+            "total_quantity": total_qty,
+            "items_count": len(items_list),
+            "status": overall_status,
+            "payment_method": getattr(primary, "payment_method", "upi") or "upi",
+            "vendor_name": items_list[0]["vendor_name"] if len(items_list) == 1 else f"{len(set(it['vendor_name'] for it in items_list))} Verified Sellers",
+            "product_name": items_list[0]["product_name"] if len(items_list) == 1 else f"{items_list[0]['product_name']} + {len(items_list) - 1} more item{'s' if len(items_list) > 2 else ''}",
+            "picture_url": items_list[0]["picture_url"],
+            "category": items_list[0]["category"] if len(items_list) == 1 else "Multi-Category",
+            "quantity": total_qty,
+            "items": items_list
         })
+        
     return res
+
+@app.post("/shop/orders/{order_id}/return-replace")
+def request_order_return_replace(
+    order_id: int,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    customer: models.User = Depends(auth.get_current_user)
+):
+    """Customer submits return or replace request which updates order status and notifies vendor."""
+    order = db.query(models.Order).filter(models.Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    req_type = payload.get("type", "replace")
+    reason = payload.get("reason", "")
+    order.status = "Replaced" if req_type == "replace" else "Returned"
+    order.return_reason = reason
+    
+    # Notify vendor
+    try:
+        activity = models.VendorActivity(
+            vendor_id=order.vendor_id,
+            admin_name=f"{customer.first_name or 'Customer'} {customer.last_name or ''}".strip(),
+            action=f"Buyer requested {req_type.capitalize()} for {order.product_name} (#{order.id}): {reason}",
+            previous_status="Completed",
+            new_status=order.status
+        )
+        db.add(activity)
+    except Exception as e:
+        logger.warning(f"Could not log vendor activity: {e}")
+        
+    db.commit()
+    return {"message": f"{req_type.capitalize()} request recorded successfully", "status": order.status}
 
 # --- Customer Profile ---
 @app.put("/customer/profile", response_model=schemas.User)
@@ -278,7 +455,7 @@ def get_vendors(db: Session = Depends(get_db), admin: models.User = Depends(auth
     for vendor in vendors:
         product_count = db.query(models.Product).filter(models.Product.vendor_id == vendor.id).count()
         orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).all()
-        revenue = sum(o.amount for o in orders)
+        revenue = sum(o.amount for o in orders if o.status != "Returned")
         
         vendor_data.append({
             "id": vendor.id,
@@ -441,6 +618,44 @@ def notify_vendor(product_id: int, req: schemas.NotifyVendorRequest, db: Session
     return {"message": f"Notification '{req.notification_type}' sent to vendor."}
 
 # --- Vendor Routes ---
+@app.get("/vendor/orders")
+def get_vendor_orders(
+    db: Session = Depends(get_db), 
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    """
+    Returns real-time sold product history / order log for the authenticated vendor.
+    """
+    orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).order_by(models.Order.created_at.desc()).all()
+    history = []
+    for o in orders:
+        customer = db.query(models.User).filter(models.User.id == o.customer_id).first() if o.customer_id else None
+        cust_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip() if customer else "Customer"
+        
+        # Match product details
+        product = db.query(models.Product).filter(
+            models.Product.vendor_id == vendor.id,
+            models.Product.title == o.product_name
+        ).first() if o.product_name else None
+        
+        history.append({
+            "order_id": o.id,
+            "order_group_id": getattr(o, "order_group_id", None) or f"OD-{o.id:04d}",
+            "product_name": o.product_name or "Store Purchase",
+            "quantity": o.quantity or 1,
+            "total_amount": round(o.amount, 2),
+            "status": o.status or "Completed",
+            "payment_method": getattr(o, "payment_method", "upi") or "upi",
+            "return_reason": getattr(o, "return_reason", None),
+            "created_at": o.created_at.strftime("%b %d, %Y • %I:%M %p") if o.created_at else "N/A",
+            "created_at_iso": o.created_at.isoformat() if o.created_at else None,
+            "customer_name": cust_name,
+            "customer_email": customer.email if customer else "N/A",
+            "picture_url": product.picture_url if product else None,
+            "category": product.category if product else "General"
+        })
+    return history
+
 @app.get("/vendor/notifications")
 def get_vendor_notifications(db: Session = Depends(get_db), vendor: models.User = Depends(auth.get_current_active_vendor)):
     activities = db.query(models.VendorActivity).filter(models.VendorActivity.vendor_id == vendor.id).order_by(models.VendorActivity.created_at.desc()).all()
@@ -472,6 +687,7 @@ async def create_product(
     sku: Optional[str] = Form(None),
     status: Optional[str] = Form("active"),
     description: Optional[str] = Form(""),
+    profit_margin: Optional[float] = Form(25.0),
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db), 
     vendor: models.User = Depends(auth.get_current_active_vendor)
@@ -483,6 +699,7 @@ async def create_product(
     if sku is None: sku = ""
     if status is None: status = "active"
     if description is None: description = ""
+    if profit_margin is None: profit_margin = 25.0
     
     if image:
         file_ext = image.filename.split('.')[-1]
@@ -501,27 +718,14 @@ async def create_product(
         description=final_desc, tagline=ai_content['tagline'],
         marketing_email=ai_content['marketing_email'],
         picture_url=picture_url, vendor_id=vendor.id,
-        sales=0
+        sales=0,
+        profit_margin=profit_margin
     )
-    
-    # Automatically generate sample data for this website
-    import random
-    sample_sales = random.randint(10, 50)
-    db_product.sales = sample_sales
     
     try:
         db.add(db_product)
         db.commit()
         db.refresh(db_product)
-        
-        # Generate a fake order to populate the vendor's revenue
-        if sample_sales > 0:
-            fake_order = models.Order(
-                amount=sample_sales * price,
-                vendor_id=vendor.id
-            )
-            db.add(fake_order)
-            db.commit()
     except Exception as e:
         import traceback
         with open("crash.txt", "w") as f:
@@ -550,6 +754,29 @@ def update_product(
     db.commit()
     return {"message": "Product updated"}
 
+@app.post("/vendor/products/generate-copy")
+def regenerate_product_copy(
+    data: dict = Body(...),
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    """
+    Generates or regenerates AI description and tagline for a product
+    based on the vendor's title, category, chosen tone (luxury, casual, technical, minimal, persuasive),
+    or custom vendor instruction prompt.
+    """
+    title = str(data.get("title", "")).strip() or "Product"
+    category = str(data.get("category", "")).strip() or "General"
+    tone = str(data.get("tone", "persuasive")).strip().lower()
+    custom_prompt = str(data.get("custom_prompt", "")).strip()
+    
+    generated = ai_service.generate_ai_content(
+        title=title, 
+        category=category, 
+        tone=tone, 
+        custom_prompt=custom_prompt
+    )
+    return generated
+
 @app.delete("/vendor/products/{product_id}")
 def delete_product(product_id: int, db: Session = Depends(get_db), vendor: models.User = Depends(auth.get_current_active_vendor)):
     prod = db.query(models.Product).filter(models.Product.id == product_id, models.Product.vendor_id == vendor.id).first()
@@ -561,63 +788,115 @@ def delete_product(product_id: int, db: Session = Depends(get_db), vendor: model
 # --- Vendor Analytics ---
 @app.get("/vendor/analytics/advanced")
 def get_advanced_analytics(
-    time_range: str = "6months", 
+    time_range: str = "month", 
     start_date: str | None = None,
     end_date: str | None = None,
     db: Session = Depends(get_db), 
     vendor: models.User = Depends(auth.get_current_active_vendor)
 ):
-    orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).all()
+    from datetime import datetime, timedelta
+
+    all_orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).all()
     products = db.query(models.Product).filter(models.Product.vendor_id == vendor.id).all()
     
-    # 1. Summary Cards
-    revenue = sum(o.amount for o in orders)
-    profit = revenue * 0.75 # mock profit 75%
-    total_orders = len(orders)
+    # 1. Product mapping for margin calculation
+    prod_margin_map = {p.title: (p.profit_margin if p.profit_margin is not None else 25.0) / 100.0 for p in products}
+    default_margin = 0.25
+
+    def calculate_order_profit(ord):
+        margin = prod_margin_map.get(ord.product_name, default_margin)
+        return ord.amount * margin
+
+    # 1. Summary Cards (Calculated strictly from actual vendor orders, subtracting returned orders)
+    valid_orders = [o for o in all_orders if o.status != "Returned"]
+    returned_orders = [o for o in all_orders if o.status == "Returned"]
+    replaced_orders = [o for o in all_orders if o.status == "Replaced"]
+    successful_orders = [o for o in all_orders if o.status not in ["Returned", "Replaced"]]
+
+    gross_revenue = round(sum(o.amount for o in all_orders), 2)
+    refunded_amount = round(sum(o.amount for o in returned_orders), 2)
+    revenue = round(sum(o.amount for o in valid_orders), 2)
+    profit = round(sum(calculate_order_profit(o) for o in valid_orders), 2)
+    total_orders = len(all_orders)
     listed = len(products)
+
+    # 1B. Order Preview: Status Breakdown (Successful, Replaced, Returned)
+    successful_cnt = len(successful_orders)
+    replaced_cnt = len(replaced_orders)
+    returned_cnt = len(returned_orders)
+
+    successful_pct = round((successful_cnt / total_orders * 100), 1) if total_orders > 0 else 0.0
+    replaced_pct = round((replaced_cnt / total_orders * 100), 1) if total_orders > 0 else 0.0
+    returned_pct = round((returned_cnt / total_orders * 100), 1) if total_orders > 0 else 0.0
+
+    successful_amt = round(sum(o.amount for o in successful_orders), 2)
+    replaced_amt = round(sum(o.amount for o in replaced_orders), 2)
+    returned_amt = round(sum(o.amount for o in returned_orders), 2)
+
+    order_status_distribution = {
+        "total_orders": total_orders,
+        "successful": {
+            "count": successful_cnt,
+            "percentage": successful_pct,
+            "amount": successful_amt,
+            "label": "Successful Orders",
+            "color": "#10b981"
+        },
+        "replaced": {
+            "count": replaced_cnt,
+            "percentage": replaced_pct,
+            "amount": replaced_amt,
+            "label": "Replacements",
+            "color": "#3b82f6"
+        },
+        "returned": {
+            "count": returned_cnt,
+            "percentage": returned_pct,
+            "amount": returned_amt,
+            "label": "Returns (Refunded)",
+            "color": "#ef4444"
+        },
+        "chart_data": [
+            {
+                "name": "Successful",
+                "value": successful_cnt,
+                "percentage": successful_pct,
+                "amount": successful_amt,
+                "color": "#10b981"
+            },
+            {
+                "name": "Replacements",
+                "value": replaced_cnt,
+                "percentage": replaced_pct,
+                "amount": replaced_amt,
+                "color": "#3b82f6"
+            },
+            {
+                "name": "Returns",
+                "value": returned_cnt,
+                "percentage": returned_pct,
+                "amount": returned_amt,
+                "color": "#ef4444"
+            }
+        ]
+    }
     
-    # 2. Charts (Mock generation based on time range)
-    import random
-    
-    sales_trend = []
-    category_sales = []
+    # 2. Product Sales Breakdown (Based on actual non-returned orders or product.sales)
     product_sales = []
-    
-    points = 6
-    if time_range == "today":
-        points = 24
-    elif time_range == "week" or time_range == "7days":
-        points = 7
-    elif time_range == "month" or time_range == "30days":
-        points = 30
-    elif time_range == "quarter":
-        points = 3
-    elif time_range == "year" or time_range == "6months":
-        points = 12 if time_range == "year" else 6
-    elif time_range == "custom":
-        points = 14 # default arbitrary points for custom ranges
-        
-    cats = list(set(p.category for p in products))
-    if not cats:
-        cats = ["General"]
-    
-    # Generate product sales first to get accurate revenue
-    product_sales = []
-    generated_revenue = 0
-    generated_orders = 0
     for p in products:
-        sales = p.sales or 0
-        prod_rev = sales * p.price
-        generated_revenue += prod_rev
-        generated_orders += sales
+        # Match non-returned orders for this specific product
+        p_orders = [o for o in valid_orders if o.product_name == p.title]
+        p_qty = sum(o.quantity for o in p_orders) if p_orders else (p.sales or 0)
+        p_rev = sum(o.amount for o in p_orders) if p_orders else (p_qty * p.price)
+        margin_pct = p.profit_margin if p.profit_margin is not None else 25.0
+        p_profit = round(p_rev * (margin_pct / 100.0), 2)
         
         # AI Insight logic
-        insight = "Analyzing..."
-        if sales == 0:
+        if p_qty == 0:
             insight = "💡 AI: No sales yet. Consider running a promo campaign."
-        elif sales < 10:
+        elif p_qty < 10:
             insight = "💡 AI: Slow mover. Try optimizing your description."
-        elif sales < 30:
+        elif p_qty < 30:
             insight = "💡 AI: Steady sales. Maintain current strategy."
         else:
             insight = "🚀 AI: High demand! Consider a 5-10% price increase to maximize profit."
@@ -625,81 +904,372 @@ def get_advanced_analytics(
         product_sales.append({
             "id": p.id,
             "title": p.title,
-            "sales": sales,
-            "revenue": prod_rev,
-            "status": "Waiting for first sale" if sales == 0 else "Active",
+            "sales": p_qty,
+            "revenue": round(p_rev, 2),
+            "profit": p_profit,
+            "profit_margin": margin_pct,
+            "status": "Waiting for first sale" if p_qty == 0 else "Active",
             "insight": insight
         })
-        
-    revenue = max(revenue, generated_revenue)
-    total_orders = max(total_orders, generated_orders)
-    profit = revenue * 0.75 # mock profit 75%
+
+    # 3. Category Sales (Calculated strictly from real purchases)
+    cats = list(set(p.category for p in products)) if products else ["General"]
+    cat_map = {c: 0.0 for c in cats}
+    for ps in product_sales:
+        matched_p = next((p for p in products if p.id == ps["id"]), None)
+        if matched_p and matched_p.category in cat_map:
+            cat_map[matched_p.category] += ps["revenue"]
+        elif cats:
+            cat_map[cats[0]] += ps["revenue"]
     
-    from datetime import datetime, timedelta
+    category_sales = [{"name": c, "value": round(cat_map.get(c, 0.0), 2)} for c in cats]
+
+    # 4. Real-Time Time-Series Trend Aggregation from actual orders
     now = datetime.utcnow()
+    sales_trend = []
     
-    # Calculate daily averages for smooth realistic business curves
-    daily_avg_rev = revenue / max(1, points) if revenue > 0 else 120.0
-    daily_avg_orders = max(1, int(total_orders / max(1, points))) if total_orders > 0 else 3
-    
-    for i in range(points):
-        # We generate points from past to present
-        step = points - 1 - i
-        
-        if time_range == "today":
-            dt = now - timedelta(hours=step)
-            label = dt.strftime("%I %p")
-        elif time_range in ["week", "7days"]:
-            dt = now - timedelta(days=step)
-            label = dt.strftime("%a %d")
-        elif time_range in ["month", "30days"]:
-            dt = now - timedelta(days=step)
-            label = dt.strftime("%b %d")
-        elif time_range == "quarter":
-            dt = now - timedelta(days=step * 30)
-            label = dt.strftime("%b %Y")
-        elif time_range in ["year", "6months"]:
-            dt = now - timedelta(days=step * 30)
-            label = dt.strftime("%b %Y")
-        elif time_range == "custom":
-            dt = now - timedelta(days=step*2)
-            label = dt.strftime("%b %d")
-        else:
-            dt = now - timedelta(days=step*30)
-            label = dt.strftime("%b %Y")
-            
-        # Realistic seasonal & weekday growth variation curve
-        variance = 0.8 + 0.4 * (i / max(1, points)) + random.uniform(-0.25, 0.25)
-        rev_point = round(max(15.0, daily_avg_rev * variance), 2)
-        ord_point = max(1, int(daily_avg_orders * variance))
-        prof_point = round(rev_point * 0.72, 2)
+    if time_range == "today":
+        buckets = []
+        for h in range(24):
+            dt = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=23 - h)
+            buckets.append((dt, dt + timedelta(hours=1), dt.strftime("%I %p")))
+    elif time_range in ["week", "7days"]:
+        buckets = []
+        for d in range(7):
+            dt = (now - timedelta(days=6 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
+            buckets.append((dt, dt + timedelta(days=1), dt.strftime("%a %d")))
+    elif time_range in ["month", "30days"]:
+        buckets = []
+        for d in range(30):
+            dt = (now - timedelta(days=29 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
+            buckets.append((dt, dt + timedelta(days=1), dt.strftime("%b %d")))
+    elif time_range in ["year", "6months", "quarter"]:
+        months = 12 if time_range == "year" else (6 if time_range == "6months" else 3)
+        buckets = []
+        for m in range(months):
+            dt = (now - timedelta(days=(months - 1 - m) * 30)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            buckets.append((dt, dt + timedelta(days=32), dt.strftime("%b %Y")))
+    else:
+        buckets = []
+        for d in range(14):
+            dt = (now - timedelta(days=13 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
+            buckets.append((dt, dt + timedelta(days=1), dt.strftime("%b %d")))
+
+    # Aggregate real orders into the buckets (net revenue excluding returns)
+    for start_dt, end_dt, label in buckets:
+        bucket_valid_orders = [
+            o for o in valid_orders 
+            if o.created_at and start_dt <= o.created_at < end_dt
+        ]
+        b_rev = round(sum(o.amount for o in bucket_valid_orders), 2)
+        b_ord = len([o for o in all_orders if o.created_at and start_dt <= o.created_at < end_dt])
+        b_prof = round(sum(calculate_order_profit(o) for o in bucket_valid_orders), 2)
         
         sales_trend.append({
-            "name": label, 
-            "revenue": rev_point,
-            "orders": ord_point,
-            "profit": prof_point
+            "name": label,
+            "revenue": b_rev,
+            "orders": b_ord,
+            "profit": b_prof
         })
         
-    for c in cats:
-        category_sales.append({"name": c, "value": round((revenue * random.uniform(0.1, 0.4)) if revenue > 0 else 0, 2)})
-        
-    # Reset seed to avoid affecting other parts of the app
-    random.seed()
-    
-    print(f"DEBUG: get_advanced_analytics called for {vendor.email} with time_range {time_range}")
-    print(f"DEBUG: last point revenue is {sales_trend[-1]['revenue']}")
-    
+    # 5. Clean Category Normalizer
+    import re
+    def clean_category_name(cat_str):
+        if not cat_str:
+            return "General"
+        cleaned = re.sub(r'[^\w\s&\'-]', '', cat_str).strip()
+        c_lower = cleaned.lower()
+        if 'watch' in c_lower:
+            return "Watches & Accessories"
+        if 'laptop' in c_lower or 'phone' in c_lower or 'electr' in c_lower:
+            return "Electronics"
+        if 'furn' in c_lower or 'home' in c_lower or 'living' in c_lower or 'table' in c_lower or 'sofa' in c_lower:
+            return "Home & Living"
+        if 'shoe' in c_lower or 'sport' in c_lower:
+            return "Sports & Fitness"
+        if 'cloth' in c_lower or 'fashion' in c_lower or 'shirt' in c_lower:
+            return "Fashion"
+        if 'book' in c_lower:
+            return "Books & Media"
+        return cleaned.title() if cleaned else "General"
+
+    PALETTE = ['#2563eb', '#059669', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
+    BAR_COLORS = ['#2563eb', '#0284c7', '#0d9488', '#64748b', '#475569']
+
+    # 6. Real Category Distribution from vendor's actual non-returned orders
+    cat_totals = {}
+    cat_order_counts = {}
+    for o in valid_orders:
+        matched = next((p for p in products if p.title == o.product_name), None)
+        raw_c = matched.category if matched else "General"
+        clean_c = clean_category_name(raw_c)
+        cat_totals[clean_c] = cat_totals.get(clean_c, 0.0) + o.amount
+        cat_order_counts[clean_c] = cat_order_counts.get(clean_c, 0) + 1
+
+    # Include products in catalog that may not have purchases yet
+    for p in products:
+        clean_c = clean_category_name(p.category)
+        if clean_c not in cat_totals:
+            cat_totals[clean_c] = 0.0
+            cat_order_counts[clean_c] = 0
+
+    total_cat_rev = sum(cat_totals.values())
+    cat_dist_list = []
+    sorted_cats = sorted(cat_totals.items(), key=lambda x: -x[1])
+    for idx, (c_name, c_rev) in enumerate(sorted_cats):
+        pct = round((c_rev / total_cat_rev * 100), 1) if total_cat_rev > 0 else round(100.0 / max(1, len(sorted_cats)), 1)
+        cat_dist_list.append({
+            "name": c_name,
+            "revenue": round(c_rev, 2),
+            "percentage": pct,
+            "orders": cat_order_counts.get(c_name, 0),
+            "color": PALETTE[idx % len(PALETTE)]
+        })
+
+    category_distribution = {
+        "total_revenue": round(total_cat_rev, 2),
+        "categories": cat_dist_list
+    }
+
+    # 7. Real Product Performance Leaderboard from vendor's actual products
+    sorted_prods = sorted(product_sales, key=lambda x: -x["revenue"])
+    max_p_rev = sorted_prods[0]["revenue"] if sorted_prods and sorted_prods[0]["revenue"] > 0 else 1.0
+    prod_performance = []
+    for idx, p in enumerate(sorted_prods[:5]):
+        pct = round((p["revenue"] / max_p_rev * 100), 1) if max_p_rev > 0 else 100.0
+        prod_performance.append({
+            "rank": idx + 1,
+            "name": p["title"],
+            "revenue": round(p["revenue"], 2),
+            "orders": p.get("sales", 0),
+            "percentage": pct,
+            "color": BAR_COLORS[idx % len(BAR_COLORS)]
+        })
+
+    # 8. Real Marketplace Vendor Performance Leaderboard across platform vendors
+    all_platform_vendors = db.query(models.User).filter(models.User.role == 'vendor').all()
+    v_rankings = []
+    for v in all_platform_vendors:
+        v_orders = db.query(models.Order).filter(models.Order.vendor_id == v.id, models.Order.status != 'Returned').all()
+        v_rev = sum(o.amount for o in v_orders)
+        v_name = v.business_name or f"{v.first_name or ''} {v.last_name or ''}".strip() or v.email.split('@')[0]
+        v_rankings.append({
+            "id": v.id,
+            "name": v_name,
+            "revenue": round(v_rev, 2),
+            "orders": len(v_orders),
+            "is_current": (v.id == vendor.id)
+        })
+    v_rankings = sorted(v_rankings, key=lambda x: -x["revenue"])
+    max_v_rev = v_rankings[0]["revenue"] if v_rankings and v_rankings[0]["revenue"] > 0 else 1.0
+    vendor_performance_list = []
+    for idx, v in enumerate(v_rankings[:5]):
+        pct = round((v["revenue"] / max_v_rev * 100), 1) if max_v_rev > 0 else 100.0
+        vendor_performance_list.append({
+            "rank": idx + 1,
+            "name": v["name"],
+            "revenue": v["revenue"],
+            "orders": v["orders"],
+            "percentage": pct,
+            "is_current": v.get("is_current", False),
+            "color": BAR_COLORS[idx % len(BAR_COLORS)]
+        })
+
+    vendor_performance = {
+        "max_revenue": max_v_rev,
+        "vendors": vendor_performance_list,
+        "product_performance": prod_performance
+    }
+
     return {
         "summary": {
             "revenue": revenue,
+            "gross_revenue": gross_revenue,
+            "refunded_amount": refunded_amount,
             "profit": profit,
             "orders": total_orders,
             "products": listed
         },
         "sales_trend": sales_trend,
+        "revenue_velocity_trend": sales_trend,
         "category_sales": category_sales,
-        "product_sales": product_sales
+        "category_distribution": category_distribution,
+        "vendor_performance": vendor_performance,
+        "product_performance": prod_performance,
+        "product_sales": product_sales,
+        "order_status_distribution": order_status_distribution
+    }
+
+# --- Dynamic Analytics Chart Endpoints with Real Database Data ---
+@app.get("/analytics/charts/order-fulfillment")
+@app.get("/vendor/analytics/charts/order-fulfillment")
+def get_order_fulfillment_chart(db: Session = Depends(get_db)):
+    """Returns Order preview percentage and counts of return, replacement and successful orders"""
+    all_orders = db.query(models.Order).all()
+    returned_orders = [o for o in all_orders if o.status == "Returned"]
+    replaced_orders = [o for o in all_orders if o.status == "Replaced"]
+    successful_orders = [o for o in all_orders if o.status not in ["Returned", "Replaced"]]
+    
+    total = len(all_orders)
+    return {
+        "status": "success",
+        "total_orders": total,
+        "successful": {
+            "count": len(successful_orders),
+            "percentage": round(len(successful_orders) / total * 100, 1) if total > 0 else 0.0,
+            "amount": round(sum(o.amount for o in successful_orders), 2),
+            "color": "#10b981"
+        },
+        "replaced": {
+            "count": len(replaced_orders),
+            "percentage": round(len(replaced_orders) / total * 100, 1) if total > 0 else 0.0,
+            "amount": round(sum(o.amount for o in replaced_orders), 2),
+            "color": "#3b82f6"
+        },
+        "returned": {
+            "count": len(returned_orders),
+            "percentage": round(len(returned_orders) / total * 100, 1) if total > 0 else 0.0,
+            "amount": round(sum(o.amount for o in returned_orders), 2),
+            "color": "#ef4444"
+        },
+        "chart_data": [
+            {
+                "name": "Successful",
+                "value": len(successful_orders),
+                "percentage": round(len(successful_orders) / total * 100, 1) if total > 0 else 0,
+                "amount": round(sum(o.amount for o in successful_orders), 2),
+                "color": "#10b981"
+            },
+            {
+                "name": "Replacements",
+                "value": len(replaced_orders),
+                "percentage": round(len(replaced_orders) / total * 100, 1) if total > 0 else 0,
+                "amount": round(sum(o.amount for o in replaced_orders), 2),
+                "color": "#3b82f6"
+            },
+            {
+                "name": "Returns",
+                "value": len(returned_orders),
+                "percentage": round(len(returned_orders) / total * 100, 1) if total > 0 else 0,
+                "amount": round(sum(o.amount for o in returned_orders), 2),
+                "color": "#ef4444"
+            }
+        ]
+    }
+
+@app.get("/analytics/charts/category-distribution")
+@app.get("/vendor/analytics/charts/category-distribution")
+def get_category_distribution_chart(db: Session = Depends(get_db)):
+    """Returns Category revenue share for donut chart from real orders"""
+    import re
+    def clean_category_name(cat_str):
+        if not cat_str:
+            return "General"
+        cleaned = re.sub(r'[^\w\s&\'-]', '', cat_str).strip()
+        c_lower = cleaned.lower()
+        if 'watch' in c_lower:
+            return "Watches & Accessories"
+        if 'laptop' in c_lower or 'phone' in c_lower or 'electr' in c_lower:
+            return "Electronics"
+        if 'furn' in c_lower or 'home' in c_lower or 'living' in c_lower or 'table' in c_lower or 'sofa' in c_lower:
+            return "Home & Living"
+        if 'shoe' in c_lower or 'sport' in c_lower:
+            return "Sports & Fitness"
+        if 'cloth' in c_lower or 'fashion' in c_lower or 'shirt' in c_lower:
+            return "Fashion"
+        if 'book' in c_lower:
+            return "Books & Media"
+        return cleaned.title() if cleaned else "General"
+
+    PALETTE = ['#2563eb', '#059669', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
+    valid_orders = db.query(models.Order).filter(models.Order.status != 'Returned').all()
+    products = db.query(models.Product).all()
+    
+    cat_totals = {}
+    for o in valid_orders:
+        matched = next((p for p in products if p.title == o.product_name), None)
+        raw_c = matched.category if matched else "General"
+        clean_c = clean_category_name(raw_c)
+        cat_totals[clean_c] = cat_totals.get(clean_c, 0.0) + o.amount
+
+    total_cat_rev = sum(cat_totals.values())
+    cat_dist_list = []
+    for idx, (c_name, c_rev) in enumerate(sorted(cat_totals.items(), key=lambda x: -x[1])):
+        pct = round((c_rev / total_cat_rev * 100), 1) if total_cat_rev > 0 else 0
+        cat_dist_list.append({
+            "name": c_name,
+            "revenue": round(c_rev, 2),
+            "percentage": pct,
+            "color": PALETTE[idx % len(PALETTE)]
+        })
+
+    return {
+        "status": "success",
+        "total_revenue": round(total_cat_rev, 2),
+        "categories": cat_dist_list
+    }
+
+@app.get("/analytics/charts/vendor-performance")
+@app.get("/vendor/analytics/charts/vendor-performance")
+def get_vendor_performance_chart(db: Session = Depends(get_db)):
+    """Returns Comparative revenue & order counts for multi-bar leaderboard from real orders"""
+    BAR_COLORS = ['#2563eb', '#0284c7', '#0d9488', '#64748b', '#475569']
+    all_platform_vendors = db.query(models.User).filter(models.User.role == 'vendor').all()
+    v_rankings = []
+    for v in all_platform_vendors:
+        v_orders = db.query(models.Order).filter(models.Order.vendor_id == v.id, models.Order.status != 'Returned').all()
+        v_rev = sum(o.amount for o in v_orders)
+        v_name = v.business_name or f"{v.first_name or ''} {v.last_name or ''}".strip() or v.email.split('@')[0]
+        v_rankings.append({
+            "id": v.id,
+            "name": v_name,
+            "revenue": round(v_rev, 2),
+            "orders": len(v_orders)
+        })
+    v_rankings = sorted(v_rankings, key=lambda x: -x["revenue"])
+    max_v_rev = v_rankings[0]["revenue"] if v_rankings and v_rankings[0]["revenue"] > 0 else 1.0
+    vendor_performance_list = []
+    for idx, v in enumerate(v_rankings[:5]):
+        pct = round((v["revenue"] / max_v_rev * 100), 1) if max_v_rev > 0 else 100.0
+        vendor_performance_list.append({
+            "rank": idx + 1,
+            "name": v["name"],
+            "revenue": v["revenue"],
+            "orders": v["orders"],
+            "percentage": pct,
+            "color": BAR_COLORS[idx % len(BAR_COLORS)]
+        })
+    return {
+        "status": "success",
+        "max_revenue": max_v_rev,
+        "vendors": vendor_performance_list
+    }
+
+@app.get("/analytics/charts/revenue-velocity")
+@app.get("/vendor/analytics/charts/revenue-velocity")
+def get_revenue_velocity_chart_endpoint(db: Session = Depends(get_db)):
+    """Returns 30-day Revenue Velocity Trajectory matching real store orders"""
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    buckets = []
+    for d in range(30):
+        dt = (now - timedelta(days=29 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
+        buckets.append((dt, dt + timedelta(days=1), dt.strftime("%b %d"), d + 1))
+
+    valid_orders = db.query(models.Order).filter(models.Order.status != 'Returned').all()
+    trajectory = []
+    for start_dt, end_dt, label, day_num in buckets:
+        b_orders = [o for o in valid_orders if o.created_at and start_dt <= o.created_at < end_dt]
+        b_rev = round(sum(o.amount for o in b_orders), 2)
+        trajectory.append({
+            "day": day_num,
+            "name": label,
+            "revenue": b_rev,
+            "orders": len(b_orders)
+        })
+    return {
+        "status": "success",
+        "trajectory": trajectory
     }
 
 # ============================================================
@@ -995,7 +1565,8 @@ def validate_vendor_analytics(
     orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).all()
     products = db.query(models.Product).filter(models.Product.vendor_id == vendor.id).all()
     
-    calc_revenue = sum(o.amount for o in orders)
+    valid_orders = [o for o in orders if o.status != "Returned"]
+    calc_revenue = sum(o.amount for o in valid_orders)
     calc_orders = len(orders)
     calc_product_count = len(products)
     total_sales_units = sum(p.sales or 0 for p in products)
@@ -1045,10 +1616,14 @@ def get_inventory_forecast(
     else:
         products = db.query(models.Product).filter(models.Product.vendor_id == vendor.id).all()
         
+    all_vendor_orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).all()
+    
     forecasts = []
     for p in products:
-        orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).all()
-        forecast = ai_service.forecast_inventory_demand(p, [{"quantity": 1} for _ in range(len(orders))])
+        # Match real orders in database for this specific product
+        p_orders = [o for o in all_vendor_orders if o.product_name == p.title]
+        order_records = [{"quantity": o.quantity, "created_at": o.created_at} for o in p_orders]
+        forecast = ai_service.forecast_inventory_demand(p, order_records)
         forecasts.append(forecast)
         
     return {
@@ -1063,19 +1638,70 @@ def get_inventory_forecast(
 # ============================================================
 @app.get("/vendor/analytics/reviews-sentiment")
 def get_vendor_review_sentiment(
+    product_id: Optional[int] = None,
     db: Session = Depends(get_db),
     vendor: models.User = Depends(auth.get_current_active_vendor)
 ):
     """
     LLM Sentiment Analysis Pipeline:
-    Analyzes all product reviews for vendor, generating sentiment score & top pros/cons.
+    Analyzes all product reviews for vendor (or a specific product), generating sentiment score & top pros/cons.
     """
     products = db.query(models.Product).filter(models.Product.vendor_id == vendor.id).all()
-    prod_ids = [p.id for p in products]
+    all_prod_ids = [p.id for p in products]
     
-    reviews = db.query(models.Review).filter(models.Review.product_id.in_(prod_ids)).all() if prod_ids else []
+    if product_id:
+        target_ids = [product_id] if product_id in all_prod_ids else []
+    else:
+        target_ids = all_prod_ids
+    
+    reviews = db.query(models.Review).filter(models.Review.product_id.in_(target_ids)).all() if target_ids else []
     
     sentiment_data = ai_service.analyze_reviews_sentiment(reviews)
+    
+    # Format the reviews for display in the dashboard
+    formatted_reviews = []
+    for r in reviews:
+        cust = db.query(models.User).filter(models.User.id == r.customer_id).first()
+        prod = db.query(models.Product).filter(models.Product.id == r.product_id).first()
+        formatted_reviews.append({
+            "id": r.id,
+            "product_id": r.product_id,
+            "product_name": prod.title if prod else "Product",
+            "customer_name": f"{cust.first_name or ''} {cust.last_name or ''}".strip() if cust else "Verified Buyer",
+            "rating": r.rating,
+            "comment": r.comment or "",
+            "pros": r.pros or "",
+            "cons": r.cons or "",
+            "sentiment_score": r.sentiment_score or 0.0,
+            "created_at": r.created_at.strftime("%b %d, %Y %I:%M %p") if r.created_at else "Recently"
+        })
+
+    # Build per-product detailed sentiment list for search, ranking and filtering
+    products_with_sentiment = []
+    for p in products:
+        p_revs = db.query(models.Review).filter(models.Review.product_id == p.id).all()
+        p_total = len(p_revs)
+        p_avg_rating = round(sum(r.rating for r in p_revs) / p_total, 1) if p_total > 0 else 0.0
+        
+        p_scores = [r.sentiment_score if (hasattr(r, 'sentiment_score') and r.sentiment_score is not None) else (r.rating - 3) / 2.0 for r in p_revs]
+        p_pos = sum(1 for s in p_scores if s > 0.1)
+        p_neg = sum(1 for s in p_scores if s < -0.1)
+        p_pos_pct = round((p_pos / p_total) * 100) if p_total > 0 else 0
+        p_neg_pct = round((p_neg / p_total) * 100) if p_total > 0 else 0
+
+        products_with_sentiment.append({
+            "id": p.id,
+            "title": p.title,
+            "category": p.category,
+            "review_count": p_total,
+            "average_rating": p_avg_rating,
+            "positive_percentage": p_pos_pct,
+            "negative_percentage": p_neg_pct,
+            "sentiment_score": round(sum(p_scores) / p_total, 2) if p_total > 0 else 0.0
+        })
+
+    sentiment_data["reviews"] = formatted_reviews
+    sentiment_data["products"] = products_with_sentiment
     return sentiment_data
 
 @app.post("/shop/reviews")
@@ -1088,10 +1714,16 @@ def submit_product_review(
     Customer Review Submission with Instant LLM Sentiment Extraction.
     """
     product_id = data.get("product_id")
+    product_name = data.get("product_name")
     rating = int(data.get("rating", 5))
     comment = str(data.get("comment", "")).strip()
     
-    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    product = None
+    if product_id:
+        product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product and product_name:
+        product = db.query(models.Product).filter(models.Product.title == product_name).first()
+        
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
         
@@ -1145,7 +1777,285 @@ def get_product_reviews(
         })
     return res
 
+# ============================================================
+# 7. Real-Time WebSockets Sales Alert Route
+# ============================================================
+@app.websocket("/ws/vendor/{vendor_id}")
+async def websocket_vendor_endpoint(websocket: WebSocket, vendor_id: int):
+    """
+    WebSocket Connection for Real-Time Sales Push Notifications:
+    Pushes live order alerts instantly to the vendor's dashboard when a customer completes checkout.
+    """
+    await ws_manager.connect(vendor_id, websocket)
+    try:
+        # Keep socket open and listen for heartbeat ping/pong
+        while True:
+            data = await websocket.receive_text()
+            # Respond to client ping
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        ws_manager.disconnect(vendor_id, websocket)
+    except Exception as e:
+        logger.info(f"WebSocket error for vendor {vendor_id}: {e}")
+        ws_manager.disconnect(vendor_id, websocket)
+
+# ============================================================
+# 8. Vendor Performance Benchmarking Metrics
+# ============================================================
+@app.get("/vendor/analytics/benchmarking")
+def get_vendor_benchmarking(
+    db: Session = Depends(get_db),
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    """
+    Benchmarking Metrics:
+    Compares vendor's key performance metrics against marketplace-wide averages:
+    - Average Order Value (AOV)
+    - Revenue Velocity (Revenue per listed product)
+    - Customer Feedback / Rating
+    - Product Catalog Breadth
+    - Repeat Customer Rate
+    """
+    all_vendors = db.query(models.User).filter(models.User.role == "vendor").all()
+    all_orders = db.query(models.Order).all()
+    all_products = db.query(models.Product).all()
+    all_reviews = db.query(models.Review).all()
+    
+    vendor_orders = [o for o in all_orders if o.vendor_id == vendor.id]
+    vendor_products = [p for p in all_products if p.vendor_id == vendor.id]
+    vendor_prod_ids = [p.id for p in vendor_products]
+    vendor_reviews = [r for r in all_reviews if r.product_id in vendor_prod_ids]
+    
+    total_vendors_count = max(1, len(all_vendors))
+    
+    # 1. Average Order Value (AOV)
+    vendor_rev = sum(o.amount for o in vendor_orders)
+    vendor_aov = vendor_rev / max(1, len(vendor_orders)) if vendor_orders else 0.0
+    
+    marketplace_rev = sum(o.amount for o in all_orders)
+    marketplace_aov = marketplace_rev / max(1, len(all_orders)) if all_orders else 150.0
+    
+    # 2. Revenue per Product
+    vendor_rev_per_product = vendor_rev / max(1, len(vendor_products)) if vendor_products else 0.0
+    marketplace_rev_per_product = marketplace_rev / max(1, len(all_products)) if all_products else 120.0
+    
+    # 3. Average Rating
+    vendor_rating = sum(r.rating for r in vendor_reviews) / max(1, len(vendor_reviews)) if vendor_reviews else (vendor.rating or 4.5)
+    marketplace_rating = sum(r.rating for r in all_reviews) / max(1, len(all_reviews)) if all_reviews else 4.4
+    
+    # 4. Catalog Size
+    vendor_catalog_size = len(vendor_products)
+    marketplace_avg_catalog = len(all_products) / total_vendors_count
+    
+    # 5. Customer Retention / Repeat Rate
+    v_customers = [o.customer_id for o in vendor_orders if o.customer_id is not None]
+    v_unique_cust = len(set(v_customers))
+    vendor_repeat_rate = round(((len(v_customers) - v_unique_cust) / max(1, len(v_customers))) * 100) if v_customers else 0
+    marketplace_repeat_rate = 22 # benchmark baseline 22%
+    
+    # Benchmark percentiles & badges
+    aov_diff_pct = round(((vendor_aov - marketplace_aov) / max(0.1, marketplace_aov)) * 100, 1)
+    rev_diff_pct = round(((vendor_rev_per_product - marketplace_rev_per_product) / max(0.1, marketplace_rev_per_product)) * 100, 1)
+    
+    return {
+        "vendor_name": vendor.business_name or f"{vendor.first_name} {vendor.last_name}",
+        "benchmarks": [
+            {
+                "metric": "Average Order Value (AOV)",
+                "vendor_value": round(vendor_aov, 2),
+                "market_average": round(marketplace_aov, 2),
+                "unit": "₹",
+                "diff_percent": aov_diff_pct,
+                "status": "above" if vendor_aov >= marketplace_aov else "below",
+                "insight": "Your average order value exceeds marketplace standards." if vendor_aov >= marketplace_aov else "Bundle related products or offer cross-sells to raise basket sizes."
+            },
+            {
+                "metric": "Revenue per Product",
+                "vendor_value": round(vendor_rev_per_product, 2),
+                "market_average": round(marketplace_rev_per_product, 2),
+                "unit": "₹",
+                "diff_percent": rev_diff_pct,
+                "status": "above" if vendor_rev_per_product >= marketplace_rev_per_product else "below",
+                "insight": "High per-item sales velocity indicating strong product-market fit." if vendor_rev_per_product >= marketplace_rev_per_product else "Promote under-performing catalog items with targeted discounts."
+            },
+            {
+                "metric": "Customer Satisfaction Rating",
+                "vendor_value": round(vendor_rating, 1),
+                "market_average": round(marketplace_rating, 1),
+                "unit": "⭐",
+                "diff_percent": round(((vendor_rating - marketplace_rating) / 5.0) * 100, 1),
+                "status": "above" if vendor_rating >= marketplace_rating else "below",
+                "insight": "Top-tier customer ratings build superior platform trust." if vendor_rating >= marketplace_rating else "Review customer sentiment feedback to address common pain points."
+            },
+            {
+                "metric": "Active Catalog Items",
+                "vendor_value": vendor_catalog_size,
+                "market_average": round(marketplace_avg_catalog, 1),
+                "unit": "items",
+                "diff_percent": round(((vendor_catalog_size - marketplace_avg_catalog) / max(1, marketplace_avg_catalog)) * 100, 1),
+                "status": "above" if vendor_catalog_size >= marketplace_avg_catalog else "below",
+                "insight": "Healthy catalog depth offering shoppers comprehensive variety." if vendor_catalog_size >= marketplace_avg_catalog else "Adding 2-3 more products can help capture additional search traffic."
+            },
+            {
+                "metric": "Repeat Customer Rate",
+                "vendor_value": vendor_repeat_rate,
+                "market_average": marketplace_repeat_rate,
+                "unit": "%",
+                "diff_percent": round(vendor_repeat_rate - marketplace_repeat_rate, 1),
+                "status": "above" if vendor_repeat_rate >= marketplace_repeat_rate else "below",
+                "insight": "Strong buyer loyalty driving repeat organic orders." if vendor_repeat_rate >= marketplace_repeat_rate else "Leverage campaign emails to re-engage previous buyers."
+            }
+        ]
+    }
+
+# ============================================================
+# 9. Data Export Endpoints (Orders, Inventory, Analytics CSV)
+# ============================================================
+def resolve_export_vendor(token: Optional[str], db: Session, request: Request):
+    """Helper to authenticate vendor from query parameter, header, or session."""
+    active_token = None
+    if token:
+        active_token = token
+    elif request.query_params.get("token"):
+        active_token = request.query_params.get("token")
+    else:
+        auth_h = request.headers.get("Authorization")
+        if auth_h and auth_h.startswith("Bearer "):
+            active_token = auth_h.split(" ")[1]
+            
+    if not active_token:
+        raise HTTPException(status_code=401, detail="Authentication token required for data export.")
+        
+    try:
+        import jwt
+        payload = jwt.decode(active_token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        email = payload.get("sub")
+        if not email:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        
+    vendor = db.query(models.User).filter(models.User.email == email).first()
+    if not vendor or vendor.role != "vendor":
+        raise HTTPException(status_code=403, detail="Only verified vendors can export store data.")
+    return vendor
+
+@app.get("/vendor/export/orders.csv")
+def export_vendor_orders_csv(
+    request: Request,
+    token: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Streams vendor order history as a formatted CSV spreadsheet."""
+    vendor = resolve_export_vendor(token, db, request)
+    orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).order_by(models.Order.created_at.desc()).all()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Order ID", "Product Name", "Quantity", "Total Amount (INR)", "Status", "Order Date", "Customer ID"])
+    
+    for o in orders:
+        writer.writerow([
+            o.id,
+            o.product_name or "N/A",
+            o.quantity or 1,
+            f"{o.amount:.2f}",
+            o.status or "Completed",
+            o.created_at.strftime("%Y-%m-%d %H:%M:%S") if o.created_at else "",
+            o.customer_id or "N/A"
+        ])
+        
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=vendor_orders_{vendor.id}.csv",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+@app.get("/vendor/export/inventory.csv")
+def export_vendor_inventory_csv(
+    request: Request,
+    token: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Streams vendor product catalog & stock levels as CSV."""
+    vendor = resolve_export_vendor(token, db, request)
+    products = db.query(models.Product).filter(models.Product.vendor_id == vendor.id).all()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Product ID", "Title", "Category", "Unit Price (INR)", "Discount (%)", "Stock Left", "Total Units Sold", "Stock Valuation (INR)", "Status"])
+    
+    for p in products:
+        qty = p.quantity or 0
+        val = qty * p.price
+        writer.writerow([
+            p.id,
+            p.title,
+            p.category,
+            f"{p.price:.2f}",
+            p.discount or 0,
+            qty,
+            p.sales or 0,
+            f"{val:.2f}",
+            p.status or "active"
+        ])
+        
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=vendor_inventory_{vendor.id}.csv",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+# ============================================================
+# 10. RAG-Powered AI Shopping Assistant API
+# ============================================================
+@app.post("/shop/ai-assistant")
+def chat_with_shopping_assistant(
+    data: dict = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    RAG-Powered AI Shopping Assistant:
+    Retrieves candidate items from the live catalog using vector search and synthesizes
+    personalized, grounded answers to shopper questions.
+    """
+    user_query = str(data.get("query", "")).strip()
+    if not user_query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+        
+    active_products = db.query(models.Product).filter(models.Product.status == "active").all()
+    response = ai_service.rag_shopping_assistant(user_query, active_products)
+    return response
+
+# ============================================================
+# 11. AI Data Analyst (Text-to-SQL) for Vendors API
+# ============================================================
+@app.post("/vendor/ai-analyst")
+def query_ai_data_analyst(
+    data: dict = Body(...),
+    db: Session = Depends(get_db),
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    """
+    Natural Language Text-to-SQL AI Data Analyst:
+    Allows vendors to ask plain-English questions about sales and business trends.
+    """
+    question = str(data.get("query", "")).strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+        
+    result = ai_service.text_to_sql_analyst(question, vendor.id, db)
+    return result
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8006, reload=True)
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8010, reload=True)
 
+ 
