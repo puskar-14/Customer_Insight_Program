@@ -305,10 +305,45 @@ def analyze_single_review(comment: str, rating: int):
         elif rating <= 2:
             cons.append(f"Low rating received ({rating}/5 Stars)")
             
+    unique_pros = list(dict.fromkeys(pros))
+    unique_cons = list(dict.fromkeys(cons))
+    c_count = len(unique_cons)
+    p_count = len(unique_pros)
+    
+    # Sentiment percentage calculation per review:
+    # For good ratings (4 or 5 stars) with cons: each con adds 10% negative (1 con -> 90% positive, 10% negative)
+    if rating >= 4:
+        if c_count > 0:
+            rev_neg = min(50, c_count * 10)
+            rev_pos = 100 - rev_neg
+            rev_neu = 0
+        else:
+            rev_pos = 100
+            rev_neg = 0
+            rev_neu = 0
+    elif rating == 3:
+        if c_count > 0:
+            rev_neg = min(50, 20 + c_count * 10)
+            rev_neu = 40
+            rev_pos = max(0, 100 - rev_neg - rev_neu)
+        else:
+            rev_pos = 40
+            rev_neu = 60
+            rev_neg = 0
+    else: # rating <= 2
+        rev_pos = 0
+        rev_neu = 10 if c_count == 0 else 0
+        rev_neg = 100 - rev_neu
+
+    score = round((rev_pos - rev_neg) / 100.0, 2)
+            
     return {
-        "sentiment_score": round(score, 2),
-        "pros": "; ".join(list(dict.fromkeys(pros))),
-        "cons": "; ".join(list(dict.fromkeys(cons)))
+        "sentiment_score": score,
+        "positive_percentage": rev_pos,
+        "negative_percentage": rev_neg,
+        "neutral_percentage": rev_neu,
+        "pros": "; ".join(unique_pros),
+        "cons": "; ".join(unique_cons)
     }
 
 def analyze_reviews_sentiment(reviews):
@@ -334,27 +369,31 @@ def analyze_reviews_sentiment(reviews):
     
     total = len(reviews)
     avg_rating = sum(r.rating for r in reviews) / total
-    scores = [r.sentiment_score if hasattr(r, 'sentiment_score') and r.sentiment_score is not None else (r.rating - 3) / 2.0 for r in reviews]
-    avg_sentiment = sum(scores) / total
     
-    pos_count = sum(1 for s in scores if s > 0.1)
-    neg_count = sum(1 for s in scores if s < -0.1)
-    neu_count = total - pos_count - neg_count
-    
-    pos_pct = round((pos_count / total) * 100)
-    neg_pct = round((neg_count / total) * 100)
-    neu_pct = 100 - pos_pct - neg_pct
-    
-    # Collect all pros & cons strictly from actual buyer comments
+    rev_breakdowns = []
     all_pros = []
     all_cons = []
+    scores = []
+    
     for r in reviews:
         nlp = analyze_single_review(r.comment, r.rating)
+        rev_breakdowns.append({
+            "pos": nlp["positive_percentage"],
+            "neg": nlp["negative_percentage"],
+            "neu": nlp["neutral_percentage"]
+        })
+        scores.append(nlp["sentiment_score"])
+        
         if nlp.get("pros"):
             all_pros.extend([p.strip() for p in nlp["pros"].split(";") if p.strip()])
         if nlp.get("cons"):
             all_cons.extend([c.strip() for c in nlp["cons"].split(";") if c.strip()])
-            
+
+    pos_pct = round(sum(b["pos"] for b in rev_breakdowns) / total)
+    neg_pct = round(sum(b["neg"] for b in rev_breakdowns) / total)
+    neu_pct = max(0, 100 - pos_pct - neg_pct)
+    avg_sentiment = round(sum(scores) / total, 2)
+    
     # Remove duplicates preserving order
     top_pros = list(dict.fromkeys(all_pros))[:5]
     top_cons = list(dict.fromkeys(all_cons))[:5]
@@ -362,14 +401,14 @@ def analyze_reviews_sentiment(reviews):
     actions = []
     if pos_pct >= 80:
         actions.append("🌟 High customer sentiment! Highlight top buyer reviews on your storefront to boost conversions.")
-    if neg_pct > 15 or len(top_cons) > 0:
+    if neg_pct > 0 or len(top_cons) > 0:
         actions.append("⚠️ Review customer feedback points regarding strap comfort, sizing, or materials to minimize returns.")
     actions.append("💡 Launch an automated post-purchase review request to gather more customer feedback.")
     
     return {
         "total_reviews": total,
         "average_rating": round(avg_rating, 1),
-        "sentiment_score": round(avg_sentiment, 2),
+        "sentiment_score": avg_sentiment,
         "positive_percentage": pos_pct,
         "neutral_percentage": neu_pct,
         "negative_percentage": neg_pct,

@@ -72,8 +72,13 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   
-  // Wishlist State (ShopSense feature)
-  const [wishlist, setWishlist] = useState([]);
+  // Wishlist State (ShopSense feature) — persisted to localStorage
+  const [wishlist, setWishlist] = useState(() => {
+    try {
+      const saved = localStorage.getItem('shopsense_wishlist');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
   
   const [toastMessage, setToastMessage] = useState(null);
   const [cartStep, setCartStep] = useState('items'); // 'items' | 'payment'
@@ -248,13 +253,18 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
   };
 
   const toggleWishlist = (productId) => {
-    if (wishlist.includes(productId)) {
-      setWishlist(wishlist.filter(id => id !== productId));
-      showToast('Removed from Wishlist ❤️');
-    } else {
-      setWishlist([...wishlist, productId]);
-      showToast('Added to Wishlist ❤️');
-    }
+    setWishlist(prev => {
+      let updated;
+      if (prev.includes(productId)) {
+        updated = prev.filter(id => id !== productId);
+        showToast('Removed from Wishlist');
+      } else {
+        updated = [...prev, productId];
+        showToast('Added to Wishlist ❤️');
+      }
+      try { localStorage.setItem('shopsense_wishlist', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
   };
 
   // Cart Operations
@@ -276,7 +286,7 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
   // Instant Buy Now action - opens payment method & order review dialog
   const handleBuyNow = (product) => {
     if (!product || product.quantity === 0) {
-      alert('This product is currently out of stock.');
+      showToast('⚠️ This product is currently out of stock.');
       return;
     }
     setBuyNowModal({
@@ -316,7 +326,7 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
       fetchProductsAndRecs();
       fetchOrders();
     } catch (err) {
-      alert(err.message || 'Checkout failed. Please try again.');
+      showToast('❌ ' + (err.message || 'Checkout failed. Please try again.'));
     } finally {
       setCheckoutLoading(false);
     }
@@ -358,7 +368,7 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
       fetchProductsAndRecs();
       fetchOrders();
     } catch (err) {
-      alert(err.message || 'Checkout failed. Please try again.');
+      showToast('❌ ' + (err.message || 'Checkout failed. Please try again.'));
     } finally {
       setCheckoutLoading(false);
     }
@@ -393,7 +403,7 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
         fetchProductsAndRecs();
       }, 2000);
     } catch (err) {
-      alert(err.message || 'Failed to submit review');
+      showToast('❌ ' + (err.message || 'Failed to submit review'));
     } finally {
       setReviewSubmitting(false);
     }
@@ -410,7 +420,7 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
       });
       showToast('Profile updated successfully! ✨');
     } catch (err) {
-      alert(err.message || 'Failed to update profile');
+      showToast('❌ ' + (err.message || 'Failed to update profile'));
     } finally {
       setProfileSaving(false);
     }
@@ -1093,8 +1103,8 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                      <span style={{ fontSize: '0.75rem', background: '#fff1f4', color: 'var(--primary-color)', padding: '0.2rem 0.5rem', borderRadius: '4px', fontWeight: 800 }}>
-                        {rec.reason}
+                      <span style={{ fontSize: '0.75rem', background: '#fff1f4', color: 'var(--primary-color)', padding: '0.2rem 0.5rem', borderRadius: '4px', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <Sparkles size={11} /> {rec.reason ? rec.reason.replace(/^[^\w\s]+/g, '').trim() : 'AI Semantic Match'}
                       </span>
                       <span style={{ fontSize: '0.8rem', color: '#ff905a', display: 'flex', alignItems: 'center', gap: '0.2rem', fontWeight: 700 }}>
                         <Star size={12} fill="#ff905a" /> {rec.rating || 4.5}
@@ -1473,7 +1483,39 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
         const fmtDate = (d) => d instanceof Date && !isNaN(d) ? d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recently';
         let visibleOrders = [...orders];
 
-        // Helper classifications for each order
+        // Helper classifications for items and orders
+        const isItemReturnedCheck = (it, parentOrd) => {
+          if (!it) return false;
+          if (returnedOrderIds.has(it.id) || returnedOrderIds.has(String(it.id)) || it.status === 'Returned') return true;
+          if (parentOrd) {
+            const parentItems = parentOrd.items && parentOrd.items.length > 0 ? parentOrd.items : [parentOrd];
+            if (parentItems.length === 1 && (
+              returnedOrderIds.has(parentOrd.id) ||
+              returnedOrderIds.has(String(parentOrd.id)) ||
+              parentOrd.status === 'Returned' ||
+              returnedOrderIds.has(parentOrd.display_order_id) ||
+              returnedOrderIds.has(parentOrd.order_group_id)
+            )) return true;
+          }
+          return false;
+        };
+
+        const isItemReplacedCheck = (it, parentOrd) => {
+          if (!it) return false;
+          if (replacedOrderIds.has(it.id) || replacedOrderIds.has(String(it.id)) || it.status === 'Replaced') return true;
+          if (parentOrd) {
+            const parentItems = parentOrd.items && parentOrd.items.length > 0 ? parentOrd.items : [parentOrd];
+            if (parentItems.length === 1 && (
+              replacedOrderIds.has(parentOrd.id) ||
+              replacedOrderIds.has(String(parentOrd.id)) ||
+              parentOrd.status === 'Replaced' ||
+              replacedOrderIds.has(parentOrd.display_order_id) ||
+              replacedOrderIds.has(parentOrd.order_group_id)
+            )) return true;
+          }
+          return false;
+        };
+
         // Active: orders still delivering within the 2-day delivery window OR ongoing replacements in transit
         const isOrderActive = (o) => {
           const od = getOrderDates(o);
@@ -1484,11 +1526,13 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
         const isOrderCompleted = (o) => getOrderDates(o).isDelivered;
         const isOrderReturned = (o) => {
           if (returnedOrderIds.has(o.id) || returnedOrderIds.has(o.display_order_id) || returnedOrderIds.has(o.order_group_id)) return true;
-          return (o.items || []).some(it => returnedOrderIds.has(it.id) || it.status === 'Returned');
+          const oItems = o.items && o.items.length > 0 ? o.items : [o];
+          return oItems.some(it => isItemReturnedCheck(it, o));
         };
         const isOrderReplaced = (o) => {
           if (replacedOrderIds.has(o.id) || replacedOrderIds.has(o.display_order_id) || replacedOrderIds.has(o.order_group_id)) return true;
-          return (o.items || []).some(it => replacedOrderIds.has(it.id) || it.status === 'Replaced');
+          const oItems = o.items && o.items.length > 0 ? o.items : [o];
+          return oItems.some(it => isItemReplacedCheck(it, o));
         };
 
         // Filter by tab
@@ -1539,12 +1583,23 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
           visibleOrders.sort((a, b) => (a.total_amount || a.amount) - (b.total_amount || b.amount));
         }
 
+        // Compute total counts for items returned and replaced
+        const totalReturnedCount = orders.reduce((sum, o) => {
+          const oItems = o.items && o.items.length > 0 ? o.items : [o];
+          return sum + oItems.filter(it => isItemReturnedCheck(it, o)).length;
+        }, 0);
+
+        const totalReplacedCount = orders.reduce((sum, o) => {
+          const oItems = o.items && o.items.length > 0 ? o.items : [o];
+          return sum + oItems.filter(it => isItemReplacedCheck(it, o)).length;
+        }, 0);
+
         const FILTER_TABS = [
           { id: 'all', label: '📋 All Orders', count: orders.length },
           { id: 'active', label: '⏳ Active', count: orders.filter(isOrderActive).length },
           { id: 'completed', label: '🏁 Completed', count: orders.filter(isOrderCompleted).length },
-          { id: 'return', label: '🔴 Returns', count: orders.filter(isOrderReturned).length },
-          { id: 'replace', label: '🔵 Replacements', count: orders.filter(isOrderReplaced).length },
+          { id: 'return', label: '🔴 Returns', count: totalReturnedCount || orders.filter(isOrderReturned).length },
+          { id: 'replace', label: '🔵 Replacements', count: totalReplacedCount || orders.filter(isOrderReplaced).length },
         ];
 
         return (
@@ -1694,8 +1749,24 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
                       } = getOrderDates(ord);
 
                       const items = ord.items && ord.items.length > 0 ? ord.items : [ord];
-                      const totalUnits = ord.total_quantity || items.reduce((s, it) => s + (it.quantity || 1), 0);
-                      const totalAmount = ord.total_amount || ord.amount || items.reduce((s, it) => s + (it.amount || 0), 0);
+
+                      // Filter items strictly if in 'return' or 'replace' tab
+                      let displayItems = items;
+                      if (orderFilterTab === 'return') {
+                        const matching = items.filter(it => isItemReturnedCheck(it, ord));
+                        displayItems = matching.length > 0 ? matching : items;
+                      } else if (orderFilterTab === 'replace') {
+                        const matching = items.filter(it => isItemReplacedCheck(it, ord));
+                        displayItems = matching.length > 0 ? matching : items;
+                      }
+
+                      const isTabFiltered = orderFilterTab === 'return' || orderFilterTab === 'replace';
+                      const totalUnits = isTabFiltered
+                        ? displayItems.reduce((s, it) => s + (it.quantity || 1), 0)
+                        : (ord.total_quantity || items.reduce((s, it) => s + (it.quantity || 1), 0));
+                      const totalAmount = isTabFiltered
+                        ? displayItems.reduce((s, it) => s + (it.amount || 0), 0)
+                        : (ord.total_amount || ord.amount || items.reduce((s, it) => s + (it.amount || 0), 0));
                       const displayId = ord.display_order_id || ord.order_group_id || `#${ord.id}`;
                       const hasRequest = isReturned || isReplaced;
                       const reqInfo = returnReasons[ord.id];
@@ -1713,10 +1784,21 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
                         'Refund Credited':        { bg: '#f0fdf4', color: '#16a34a', text: '🏁 Refund Credited' },
                         'Partial Return':         { bg: '#fff1f4', color: '#be123c', text: '↩️ Partial Return' },
                       };
-                      const sc = statusConfig[orderStatus] || (isDelivered ? statusConfig['Delivered'] : statusConfig['In Transit']);
+                      
+                      let effectiveStatus = orderStatus;
+                      if (orderFilterTab === 'return') {
+                        effectiveStatus = isReturnCompleted ? 'Refund Credited' : 'Return In Progress';
+                      } else if (orderFilterTab === 'replace') {
+                        effectiveStatus = isReplacementCompleted ? 'Replacement Delivered' : 'Replacement Dispatched';
+                      }
+                      const sc = statusConfig[effectiveStatus] || statusConfig[orderStatus] || (isDelivered ? statusConfig['Delivered'] : statusConfig['In Transit']);
 
                       // Card border/bg based on state
-                      const cardBorder = isReturned ? '#fde2e7' : isReplaced ? (isReplacementCompleted ? '#d1fae5' : '#bae6fd') : isCompleted ? '#d1fae5' : '#eaeaec';
+                      const cardBorder = orderFilterTab === 'return' || isReturned 
+                        ? '#fde2e7' 
+                        : orderFilterTab === 'replace' || isReplaced 
+                          ? (isReplacementCompleted ? '#d1fae5' : '#bae6fd') 
+                          : isCompleted ? '#d1fae5' : '#eaeaec';
 
                       return (
                         <div
@@ -1765,7 +1847,13 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
                                 alignItems: 'center',
                                 gap: '0.3rem'
                               }}>
-                                📦 {totalUnits} {totalUnits === 1 ? 'unit' : 'units'} ({items.length} {items.length === 1 ? 'product' : 'products'})
+                                {orderFilterTab === 'return' ? (
+                                  <>🔴 {totalUnits} {totalUnits === 1 ? 'returned unit' : 'returned units'} ({displayItems.length} {displayItems.length === 1 ? 'product' : 'products'})</>
+                                ) : orderFilterTab === 'replace' ? (
+                                  <>🔵 {totalUnits} {totalUnits === 1 ? 'replaced unit' : 'replaced units'} ({displayItems.length} {displayItems.length === 1 ? 'product' : 'products'})</>
+                                ) : (
+                                  <>📦 {totalUnits} {totalUnits === 1 ? 'unit' : 'units'} ({displayItems.length} {displayItems.length === 1 ? 'product' : 'products'})</>
+                                )}
                               </span>
                               <span style={{ fontSize: '0.74rem', background: sc.bg, color: sc.color, padding: '0.18rem 0.55rem', borderRadius: '4px', fontWeight: 700 }}>
                                 {sc.text}
@@ -1846,11 +1934,11 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
 
                           {/* ── PRODUCT LINE ITEMS IN THIS ORDER ── */}
                           <div style={{ padding: '1.15rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                            {items.map((item, itemIdx) => {
+                            {displayItems.map((item, itemIdx) => {
                               const itemImg = getOrderImage(item);
-                              const isItemReturned = returnedOrderIds.has(item.id) || item.status === 'Returned';
-                              const isItemReplaced = replacedOrderIds.has(item.id) || item.status === 'Replaced';
-                              const itemReqInfo = returnReasons[item.id] || (hasRequest ? reqInfo : null);
+                              const isItemReturned = isItemReturnedCheck(item, ord);
+                              const isItemReplaced = isItemReplacedCheck(item, ord);
+                              const itemReqInfo = returnReasons[item.id] || returnReasons[String(item.id)] || (hasRequest ? reqInfo : null);
 
                               return (
                                 <div
@@ -1902,6 +1990,22 @@ const CustomerDashboard = ({ initialTab = 'shop' }) => {
                                             {item.category}
                                           </span>
                                         )}
+                                        {/* Prominent Order No / ID Badge */}
+                                        <span style={{
+                                          fontSize: '0.72rem',
+                                          background: '#f8fafc',
+                                          color: '#1e293b',
+                                          border: '1px solid #cbd5e1',
+                                          padding: '0.12rem 0.5rem',
+                                          borderRadius: '4px',
+                                          fontWeight: 700,
+                                          letterSpacing: '0.01em',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '0.25rem'
+                                        }}>
+                                          🆔 Order: <strong>{displayId}</strong>{item.id ? ` (Item #${item.id})` : ''}
+                                        </span>
                                         {isItemReturned && (
                                           <span style={{ fontSize: '0.7rem', background: '#fff1f4', color: 'var(--primary-color)', padding: '0.12rem 0.45rem', borderRadius: '4px', fontWeight: 700 }}>
                                             🔴 Returned

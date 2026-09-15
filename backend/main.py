@@ -55,7 +55,79 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
-app = FastAPI(title="Shop Sense API v3", description="The engine powering our multi-vendor platform.")
+tags_metadata = [
+    {
+        "name": "Auth",
+        "description": "User registration, login, JWT token management, and password reset.",
+    },
+    {
+        "name": "Shop",
+        "description": "Customer-facing storefront â€” browse products, checkout, view orders, and manage returns.",
+    },
+    {
+        "name": "Customer",
+        "description": "Customer profile management.",
+    },
+    {
+        "name": "Vendor",
+        "description": "Vendor portal â€” manage products, view orders, access analytics, export data, and use AI tools.",
+    },
+    {
+        "name": "Admin",
+        "description": "Admin panel â€” manage vendors, products, platform analytics, customer segmentation, and inventory.",
+    },
+    {
+        "name": "AI Services",
+        "description": "AI-powered features: semantic product recommendations (vector search), NLP sentiment analysis, demand forecasting, and the AI chat assistant.",
+    },
+    {
+        "name": "Analytics",
+        "description": "Platform-wide and per-vendor analytics charts: revenue velocity, order fulfillment, category distribution, and vendor performance benchmarking.",
+    },
+]
+
+app = FastAPI(
+    title="ShopSense API",
+    description="""
+## ðŸ›ï¸ ShopSense â€” Multi-Vendor E-Commerce Platform API
+
+A production-ready FastAPI backend powering ShopSense's multi-vendor marketplace.
+
+### Key Capabilities
+- **ðŸ” JWT Authentication** â€” Secure login for customers, vendors, and admins
+- **ðŸ›’ Customer Marketplace** â€” Browse, filter, checkout, track orders, request returns/replacements
+- **ðŸª Vendor Portal** â€” Manage inventory, view real-time sales, export reports, get AI-generated product copy
+- **ðŸ¤– AI Services** â€” Semantic vector-search recommendations, NLP sentiment analysis, predictive inventory forecasting
+- **ðŸ“Š Advanced Analytics** â€” Revenue charts, order fulfillment breakdown, customer segmentation, vendor benchmarking
+- **ðŸ“¦ Stock Health Monitoring** â€” Low-stock alerts, restock recommendations, demand forecasting
+- **ðŸ”” Real-time Notifications** â€” WebSocket-powered live sales alerts for vendors
+
+### Authentication
+Most vendor/admin endpoints require a **Bearer JWT token**.  
+Obtain one via `POST /auth/login`, then pass it as:  
+`Authorization: Bearer <your_token>`
+
+### Demo Credentials
+| Role | Email | Password |
+|------|-------|----------|
+| Customer | `customer@shopsense.com` | `password123` |
+| Vendor | `vendor@shopsense.com` | `password123` |
+| Admin | `shopesenseadmin@gmail.com` | `shopsensepassword` |
+""",
+    version="3.0.0",
+    contact={
+        "name": "ShopSense Support",
+        "url": "https://github.com/your-repo/shop-sense",
+        "email": "shopesenseadmin@gmail.com",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    openapi_tags=tags_metadata,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,6 +148,12 @@ def get_db():
         yield db
     finally:
         db.close()
+
+@app.get("/health", tags=["Auth"], summary="Health check", include_in_schema=True,
+         response_description="Returns status=ok when the server is running")
+def health_check():
+    """Simple health-check endpoint for Docker, load balancers, and Render.com."""
+    return {"status": "ok", "version": "3.0.0"}
 
 @app.on_event("startup")
 def startup_event():
@@ -117,7 +195,9 @@ def startup_event():
     db.close()
 
 # --- Authentication Routes ---
-@app.post("/auth/register", response_model=schemas.User)
+@app.post("/auth/register", response_model=schemas.User, tags=["Auth"],
+          summary="Register a new user",
+          response_description="The newly created user object (password hash is never returned)")
 def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     """Handles new user registrations. Vendors get set to 'pending' for admin review."""
     db_user = db.query(models.User).filter(models.User.email == user.email).first()
@@ -156,7 +236,9 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
         
     return new_user
 
-@app.post("/auth/login", response_model=schemas.Token)
+@app.post("/auth/login", response_model=schemas.Token, tags=["Auth"],
+          summary="Login and receive a JWT access token",
+          response_description="Bearer JWT token valid for 24 hours")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Logs the user in and hands them a shiny new JWT."""
     user = db.query(models.User).filter(models.User.email == form_data.username).first()
@@ -176,7 +258,9 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.post("/auth/reset-password")
+@app.post("/auth/reset-password", tags=["Auth"],
+          summary="Reset a user's password by email",
+          response_description="Confirmation message")
 def reset_password(req: schemas.PasswordReset, db: Session = Depends(get_db)):
     """Simple password reset. (In a real app, we'd send an email with a token first!)"""
     user = db.query(models.User).filter(models.User.email == req.email).first()
@@ -188,12 +272,17 @@ def reset_password(req: schemas.PasswordReset, db: Session = Depends(get_db)):
     logger.info(f"Password reset successfully for {req.email}")
     return {"message": "Your password has been updated successfully."}
 
-@app.get("/auth/me", response_model=schemas.User)
+@app.get("/auth/me", response_model=schemas.User, tags=["Auth"],
+         summary="Get the currently authenticated user",
+         response_description="Full user profile of the bearer token owner")
 def get_me(current_user: models.User = Depends(auth.get_current_user)):
     return current_user
 
+
 # --- Customer Shop Routes ---
-@app.get("/shop/products")
+@app.get("/shop/products", tags=["Shop"],
+         summary="Get all active products",
+         response_description="List of active products available for purchase")
 def get_shop_products(db: Session = Depends(get_db)):
     """Get all active products for the customer storefront."""
     products = db.query(models.Product).filter(models.Product.status == "active", models.Product.quantity > 0).all()
@@ -217,7 +306,9 @@ def get_shop_products(db: Session = Depends(get_db)):
         })
     return result
 
-@app.post("/shop/checkout")
+@app.post("/shop/checkout", tags=["Shop"],
+          summary="Place an order for all items in the cart",
+          response_description="Order confirmation with master order ID and per-vendor order details")
 def checkout(
     cart: list = Body(...),
     db: Session = Depends(get_db),
@@ -234,6 +325,7 @@ def checkout(
     orders_created = []
     total_amount = 0.0
     total_quantity = 0
+    vendor_order_items = {}
     
     for item in cart:
         product = db.query(models.Product).filter(models.Product.id == item["product_id"]).first()
@@ -262,6 +354,17 @@ def checkout(
             payment_method=pay_method
         )
         db.add(order)
+        db.flush()
+
+        if product.vendor_id not in vendor_order_items:
+            vendor_order_items[product.vendor_id] = []
+        vendor_order_items[product.vendor_id].append({
+            "order_id": order.id,
+            "title": product.title,
+            "quantity": qty,
+            "subtotal": item_total
+        })
+
         total_amount += item_total
         total_quantity += qty
         orders_created.append({
@@ -270,6 +373,29 @@ def checkout(
             "subtotal": round(item_total, 2)
         })
     
+    # Create 1 consolidated "New Order" notification per vendor with the Order ID (not per item)
+    c_first = customer.first_name if customer.first_name else "Buyer"
+    c_last = customer.last_name if customer.last_name else ""
+    cust_name = f"{c_first} {c_last}".strip() or "Verified Customer"
+    checkout_pay = cart[0].get("payment_method", "upi").upper() if cart else "UPI"
+
+    for v_id, v_items in vendor_order_items.items():
+        v_total_qty = sum(x["quantity"] for x in v_items)
+        v_total_amt = sum(x["subtotal"] for x in v_items)
+        items_summary = ", ".join([f"{x['title']} (x{x['quantity']})" for x in v_items[:3]])
+        if len(v_items) > 3:
+            items_summary += f" +{len(v_items) - 3} more"
+            
+        sold_act = models.VendorActivity(
+            vendor_id=v_id,
+            admin_name=cust_name,
+            action=f"New Order: {order_group_id}",
+            previous_status="In Stock",
+            new_status="Completed",
+            remarks=f"Buyer {cust_name} placed order for {v_total_qty} item(s) [{items_summary}] totaling ₹{v_total_amt:,.2f} via {checkout_pay}."
+        )
+        db.add(sold_act)
+
     db.commit()
     
     # Broadcast real-time sales alert to active vendor WebSockets
@@ -294,7 +420,7 @@ def checkout(
                 logger.warning(f"Failed to schedule WS sale broadcast: {e}")
     
     return {
-        "message": "Order placed successfully! 🎉",
+        "message": "Order placed successfully! ðŸŽ‰",
         "order_id": order_group_id,
         "order_group_id": order_group_id,
         "total": round(total_amount, 2),
@@ -304,7 +430,7 @@ def checkout(
         "payment_method": cart[0].get("payment_method", "upi") if cart else "upi"
     }
 
-@app.get("/shop/orders")
+@app.get("/shop/orders", tags=["Shop"], summary="Get all orders for the logged-in customer")
 def get_customer_orders(
     db: Session = Depends(get_db),
     customer: models.User = Depends(auth.get_current_user)
@@ -399,7 +525,8 @@ def get_customer_orders(
         
     return res
 
-@app.post("/shop/orders/{order_id}/return-replace")
+@app.post("/shop/orders/{order_id}/return-replace", tags=["Shop"],
+          summary="Request a return or replacement for an order item")
 def request_order_return_replace(
     order_id: int,
     payload: dict = Body(...),
@@ -432,7 +559,7 @@ def request_order_return_replace(
     return {"message": f"{req_type.capitalize()} request recorded successfully", "status": order.status}
 
 # --- Customer Profile ---
-@app.put("/customer/profile", response_model=schemas.User)
+@app.put("/customer/profile", response_model=schemas.User, tags=["Customer"], summary="Update the logged-in customer's profile")
 def update_customer_profile(
     update_data: dict = Body(...),
     db: Session = Depends(get_db),
@@ -447,7 +574,7 @@ def update_customer_profile(
     return customer
 
 # --- Admin Routes ---
-@app.get("/admin/vendors")
+@app.get("/admin/vendors", tags=["Admin"], summary="List all vendors with their status")
 def get_vendors(db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
     vendors = db.query(models.User).filter(models.User.role == "vendor").all()
     
@@ -473,7 +600,7 @@ def get_vendors(db: Session = Depends(get_db), admin: models.User = Depends(auth
         
     return {"vendors": vendor_data}
 
-@app.get("/admin/vendor-activities")
+@app.get("/admin/vendor-activities", tags=["Admin"], summary="Audit log of all vendor status changes")
 def get_vendor_activities(db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
     activities = db.query(models.VendorActivity).order_by(models.VendorActivity.created_at.desc()).all()
     res = []
@@ -491,7 +618,7 @@ def get_vendor_activities(db: Session = Depends(get_db), admin: models.User = De
         })
     return res
 
-@app.put("/admin/vendors/{vendor_id}/status")
+@app.put("/admin/vendors/{vendor_id}/status", tags=["Admin"], summary="Approve or suspend a vendor account")
 def update_vendor_status(vendor_id: int, status_update: dict, db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
     vendor = db.query(models.User).filter(models.User.id == vendor_id).first()
     if not vendor or vendor.role != "vendor":
@@ -512,7 +639,7 @@ def update_vendor_status(vendor_id: int, status_update: dict, db: Session = Depe
     db.commit()
     return {"message": "Status updated successfully."}
 
-@app.get("/admin/products")
+@app.get("/admin/products", tags=["Admin"], summary="Get all products across all vendors")
 def get_all_products(db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
     products = db.query(models.Product).all()
     res = []
@@ -535,270 +662,21 @@ def get_all_products(db: Session = Depends(get_db), admin: models.User = Depends
         })
     return res
 
-@app.get("/admin/analytics")
-def get_platform_analytics(db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
-    vendors = db.query(models.User).filter(models.User.role == "vendor").all()
-    products = db.query(models.Product).all()
-    
-    total_revenue = 0
-    vendor_stats = []
-    
-    for v in vendors:
-        v_products = [p for p in products if p.vendor_id == v.id]
-        
-        v_revenue = 0
-        v_orders = 0
-        for p in v_products:
-            sales = p.sales or 0
-            v_revenue += sales * p.price
-            v_orders += sales
-        
-        total_revenue += v_revenue
-        
-        vendor_stats.append({
-            "vendor_id": v.id,
-            "vendor_name": v.business_name or f"{v.first_name} {v.last_name}",
-            "email": v.email,
-            "phone_number": v.phone_number,
-            "joined_date": v.joined_date.strftime("%Y-%m-%d") if v.joined_date else "N/A",
-            "rating": v.rating,
-            "revenue": v_revenue,
-            "orders": v_orders,
-            "products": len(v_products),
-            "products_list": [{"title": p.title, "price": p.price, "stock": p.quantity} for p in v_products],
-            "status": v.status
-        })
-        
-    return {
-        "summary": {
-            "total_revenue": total_revenue,
-            "total_vendors": len(vendors),
-            "total_products": len(products),
-            "total_orders": sum(vs["orders"] for vs in vendor_stats)
-        },
-        "vendor_performance": sorted(vendor_stats, key=lambda x: x["revenue"], reverse=True)
-    }
-
-@app.post("/admin/products/{product_id}/marketing-email")
-def send_marketing_email(product_id: int, req: schemas.MarketingEmailRequest, db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
-    product = db.query(models.Product).filter(models.Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    print(f"Simulating sending marketing email for product '{product.title}' to customers:\n{req.content}")
-    return {"message": "Marketing email sent to subscribers successfully."}
-
-@app.post("/admin/products/{product_id}/notify-vendor")
-def notify_vendor(product_id: int, req: schemas.NotifyVendorRequest, db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
-    product = db.query(models.Product).filter(models.Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    
-    vendor = product.vendor
-    if not vendor:
-        raise HTTPException(status_code=404, detail="Vendor not found")
-        
-    if req.notification_type == "out_of_stock":
-        action_text = f"Out of Stock Alert for {product.title}"
-    elif req.notification_type == "price_increase":
-        action_text = f"Price Increase Suggestion for {product.title}"
-    else:
-        action_text = f"Notification regarding {product.title}"
-        
-    activity = models.VendorActivity(
-        vendor_id=vendor.id,
-        admin_name=f"{admin.first_name} {admin.last_name}" if admin.first_name else "Admin",
-        action="Notification Sent",
-        remarks=f"Sent email: {action_text}"
-    )
-    db.add(activity)
-    db.commit()
-    
-    print(f"Simulating sending email to vendor {vendor.email}: {action_text}")
-    return {"message": f"Notification '{req.notification_type}' sent to vendor."}
-
-# --- Vendor Routes ---
-@app.get("/vendor/orders")
-def get_vendor_orders(
-    db: Session = Depends(get_db), 
-    vendor: models.User = Depends(auth.get_current_active_vendor)
-):
-    """
-    Returns real-time sold product history / order log for the authenticated vendor.
-    """
-    orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).order_by(models.Order.created_at.desc()).all()
-    history = []
-    for o in orders:
-        customer = db.query(models.User).filter(models.User.id == o.customer_id).first() if o.customer_id else None
-        cust_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip() if customer else "Customer"
-        
-        # Match product details
-        product = db.query(models.Product).filter(
-            models.Product.vendor_id == vendor.id,
-            models.Product.title == o.product_name
-        ).first() if o.product_name else None
-        
-        history.append({
-            "order_id": o.id,
-            "order_group_id": getattr(o, "order_group_id", None) or f"OD-{o.id:04d}",
-            "product_name": o.product_name or "Store Purchase",
-            "quantity": o.quantity or 1,
-            "total_amount": round(o.amount, 2),
-            "status": o.status or "Completed",
-            "payment_method": getattr(o, "payment_method", "upi") or "upi",
-            "return_reason": getattr(o, "return_reason", None),
-            "created_at": o.created_at.strftime("%b %d, %Y • %I:%M %p") if o.created_at else "N/A",
-            "created_at_iso": o.created_at.isoformat() if o.created_at else None,
-            "customer_name": cust_name,
-            "customer_email": customer.email if customer else "N/A",
-            "picture_url": product.picture_url if product else None,
-            "category": product.category if product else "General"
-        })
-    return history
-
-@app.get("/vendor/notifications")
-def get_vendor_notifications(db: Session = Depends(get_db), vendor: models.User = Depends(auth.get_current_active_vendor)):
-    activities = db.query(models.VendorActivity).filter(models.VendorActivity.vendor_id == vendor.id).order_by(models.VendorActivity.created_at.desc()).all()
-    return activities
-
-# --- Vendor Profile ---
-@app.put("/vendor/profile", response_model=schemas.User)
-def update_vendor_profile(
-    update_data: dict = Body(...),
-    db: Session = Depends(get_db), 
-    vendor: models.User = Depends(auth.get_current_active_vendor)
-):
-    allowed_fields = {"first_name", "last_name", "phone_number", "address", "business_name", "business_category", "gst_number", "profile_picture_url"}
-    for key, value in update_data.items():
-        if key in allowed_fields and hasattr(vendor, key):
-            setattr(vendor, key, value)
-    db.commit()
-    db.refresh(vendor)
-    return vendor
-
-# --- Vendor Products ---
-@app.post("/vendor/products", response_model=schemas.Product)
-async def create_product(
-    title: str = Form(...),
-    category: str = Form(...),
-    price: float = Form(...),
-    quantity: int = Form(...),
-    discount: Optional[float] = Form(0.0),
-    sku: Optional[str] = Form(None),
-    status: Optional[str] = Form("active"),
-    description: Optional[str] = Form(""),
-    profit_margin: Optional[float] = Form(25.0),
-    image: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db), 
-    vendor: models.User = Depends(auth.get_current_active_vendor)
-):
-    picture_url = None
-    
-    # Ensure defaults for optional fields
-    if discount is None: discount = 0.0
-    if sku is None: sku = ""
-    if status is None: status = "active"
-    if description is None: description = ""
-    if profit_margin is None: profit_margin = 25.0
-    
-    if image:
-        file_ext = image.filename.split('.')[-1]
-        file_name = f"{uuid.uuid4()}.{file_ext}"
-        file_path = os.path.join("static", "uploads", file_name)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(image.file, buffer)
-        picture_url = f"/static/uploads/{file_name}"
-    
-    ai_content = ai_service.generate_ai_content(title, category)
-    final_desc = f"{description}\n\n[AI Enhanced]: {ai_content['description']}" if description else ai_content['description']
-    
-    db_product = models.Product(
-        title=title, category=category, price=price, quantity=quantity,
-        discount=discount, sku=sku, status=status,
-        description=final_desc, tagline=ai_content['tagline'],
-        marketing_email=ai_content['marketing_email'],
-        picture_url=picture_url, vendor_id=vendor.id,
-        sales=0,
-        profit_margin=profit_margin
-    )
-    
-    try:
-        db.add(db_product)
-        db.commit()
-        db.refresh(db_product)
-    except Exception as e:
-        import traceback
-        with open("crash.txt", "w") as f:
-            f.write(traceback.format_exc())
-        raise e
-    
-    return db_product
-
-@app.get("/vendor/products", response_model=list[schemas.Product])
-def get_vendor_products(db: Session = Depends(get_db), vendor: models.User = Depends(auth.get_current_user)):
-    return db.query(models.Product).filter(models.Product.vendor_id == vendor.id).all()
-
-@app.put("/vendor/products/{product_id}")
-def update_product(
-    product_id: int, 
-    update_data: dict = Body(...), 
-    db: Session = Depends(get_db), 
-    vendor: models.User = Depends(auth.get_current_active_vendor)
-):
-    prod = db.query(models.Product).filter(models.Product.id == product_id, models.Product.vendor_id == vendor.id).first()
-    if not prod:
-        raise HTTPException(status_code=404)
-    for k, v in update_data.items():
-        if hasattr(prod, k):
-            setattr(prod, k, v)
-    db.commit()
-    return {"message": "Product updated"}
-
-@app.post("/vendor/products/generate-copy")
-def regenerate_product_copy(
-    data: dict = Body(...),
-    vendor: models.User = Depends(auth.get_current_active_vendor)
-):
-    """
-    Generates or regenerates AI description and tagline for a product
-    based on the vendor's title, category, chosen tone (luxury, casual, technical, minimal, persuasive),
-    or custom vendor instruction prompt.
-    """
-    title = str(data.get("title", "")).strip() or "Product"
-    category = str(data.get("category", "")).strip() or "General"
-    tone = str(data.get("tone", "persuasive")).strip().lower()
-    custom_prompt = str(data.get("custom_prompt", "")).strip()
-    
-    generated = ai_service.generate_ai_content(
-        title=title, 
-        category=category, 
-        tone=tone, 
-        custom_prompt=custom_prompt
-    )
-    return generated
-
-@app.delete("/vendor/products/{product_id}")
-def delete_product(product_id: int, db: Session = Depends(get_db), vendor: models.User = Depends(auth.get_current_active_vendor)):
-    prod = db.query(models.Product).filter(models.Product.id == product_id, models.Product.vendor_id == vendor.id).first()
-    if prod:
-        db.delete(prod)
-        db.commit()
-    return {"message": "Deleted"}
-
-# --- Vendor Analytics ---
-@app.get("/vendor/analytics/advanced")
-def get_advanced_analytics(
-    time_range: str = "month", 
-    start_date: str | None = None,
-    end_date: str | None = None,
-    db: Session = Depends(get_db), 
-    vendor: models.User = Depends(auth.get_current_active_vendor)
+def compute_analytics_data(
+    db: Session, 
+    vendor_id: Optional[int] = None, 
+    time_range: str = "month"
 ):
     from datetime import datetime, timedelta
+    import re
 
-    all_orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).all()
-    products = db.query(models.Product).filter(models.Product.vendor_id == vendor.id).all()
-    
+    if vendor_id:
+        all_orders = db.query(models.Order).filter(models.Order.vendor_id == vendor_id).all()
+        products = db.query(models.Product).filter(models.Product.vendor_id == vendor_id).all()
+    else:
+        all_orders = db.query(models.Order).all()
+        products = db.query(models.Product).all()
+
     # 1. Product mapping for margin calculation
     prod_margin_map = {p.title: (p.profit_margin if p.profit_margin is not None else 25.0) / 100.0 for p in products}
     default_margin = 0.25
@@ -807,7 +685,7 @@ def get_advanced_analytics(
         margin = prod_margin_map.get(ord.product_name, default_margin)
         return ord.amount * margin
 
-    # 1. Summary Cards (Calculated strictly from actual vendor orders, subtracting returned orders)
+    # Valid / Returned / Replaced orders
     valid_orders = [o for o in all_orders if o.status != "Returned"]
     returned_orders = [o for o in all_orders if o.status == "Returned"]
     replaced_orders = [o for o in all_orders if o.status == "Replaced"]
@@ -820,7 +698,6 @@ def get_advanced_analytics(
     total_orders = len(all_orders)
     listed = len(products)
 
-    # 1B. Order Preview: Status Breakdown (Successful, Replaced, Returned)
     successful_cnt = len(successful_orders)
     replaced_cnt = len(replaced_orders)
     returned_cnt = len(returned_orders)
@@ -880,18 +757,16 @@ def get_advanced_analytics(
             }
         ]
     }
-    
-    # 2. Product Sales Breakdown (Based on actual non-returned orders or product.sales)
+
+    # Product Sales Breakdown
     product_sales = []
     for p in products:
-        # Match non-returned orders for this specific product
         p_orders = [o for o in valid_orders if o.product_name == p.title]
         p_qty = sum(o.quantity for o in p_orders) if p_orders else (p.sales or 0)
         p_rev = sum(o.amount for o in p_orders) if p_orders else (p_qty * p.price)
         margin_pct = p.profit_margin if p.profit_margin is not None else 25.0
         p_profit = round(p_rev * (margin_pct / 100.0), 2)
-        
-        # AI Insight logic
+
         if p_qty == 0:
             insight = "💡 AI: No sales yet. Consider running a promo campaign."
         elif p_qty < 10:
@@ -912,68 +787,7 @@ def get_advanced_analytics(
             "insight": insight
         })
 
-    # 3. Category Sales (Calculated strictly from real purchases)
-    cats = list(set(p.category for p in products)) if products else ["General"]
-    cat_map = {c: 0.0 for c in cats}
-    for ps in product_sales:
-        matched_p = next((p for p in products if p.id == ps["id"]), None)
-        if matched_p and matched_p.category in cat_map:
-            cat_map[matched_p.category] += ps["revenue"]
-        elif cats:
-            cat_map[cats[0]] += ps["revenue"]
-    
-    category_sales = [{"name": c, "value": round(cat_map.get(c, 0.0), 2)} for c in cats]
-
-    # 4. Real-Time Time-Series Trend Aggregation from actual orders
-    now = datetime.utcnow()
-    sales_trend = []
-    
-    if time_range == "today":
-        buckets = []
-        for h in range(24):
-            dt = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=23 - h)
-            buckets.append((dt, dt + timedelta(hours=1), dt.strftime("%I %p")))
-    elif time_range in ["week", "7days"]:
-        buckets = []
-        for d in range(7):
-            dt = (now - timedelta(days=6 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
-            buckets.append((dt, dt + timedelta(days=1), dt.strftime("%a %d")))
-    elif time_range in ["month", "30days"]:
-        buckets = []
-        for d in range(30):
-            dt = (now - timedelta(days=29 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
-            buckets.append((dt, dt + timedelta(days=1), dt.strftime("%b %d")))
-    elif time_range in ["year", "6months", "quarter"]:
-        months = 12 if time_range == "year" else (6 if time_range == "6months" else 3)
-        buckets = []
-        for m in range(months):
-            dt = (now - timedelta(days=(months - 1 - m) * 30)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            buckets.append((dt, dt + timedelta(days=32), dt.strftime("%b %Y")))
-    else:
-        buckets = []
-        for d in range(14):
-            dt = (now - timedelta(days=13 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
-            buckets.append((dt, dt + timedelta(days=1), dt.strftime("%b %d")))
-
-    # Aggregate real orders into the buckets (net revenue excluding returns)
-    for start_dt, end_dt, label in buckets:
-        bucket_valid_orders = [
-            o for o in valid_orders 
-            if o.created_at and start_dt <= o.created_at < end_dt
-        ]
-        b_rev = round(sum(o.amount for o in bucket_valid_orders), 2)
-        b_ord = len([o for o in all_orders if o.created_at and start_dt <= o.created_at < end_dt])
-        b_prof = round(sum(calculate_order_profit(o) for o in bucket_valid_orders), 2)
-        
-        sales_trend.append({
-            "name": label,
-            "revenue": b_rev,
-            "orders": b_ord,
-            "profit": b_prof
-        })
-        
-    # 5. Clean Category Normalizer
-    import re
+    # Category Normalizer
     def clean_category_name(cat_str):
         if not cat_str:
             return "General"
@@ -996,7 +810,7 @@ def get_advanced_analytics(
     PALETTE = ['#2563eb', '#059669', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
     BAR_COLORS = ['#2563eb', '#0284c7', '#0d9488', '#64748b', '#475569']
 
-    # 6. Real Category Distribution from vendor's actual non-returned orders
+    # Category Sales / Distribution
     cat_totals = {}
     cat_order_counts = {}
     for o in valid_orders:
@@ -1006,7 +820,6 @@ def get_advanced_analytics(
         cat_totals[clean_c] = cat_totals.get(clean_c, 0.0) + o.amount
         cat_order_counts[clean_c] = cat_order_counts.get(clean_c, 0) + 1
 
-    # Include products in catalog that may not have purchases yet
     for p in products:
         clean_c = clean_category_name(p.category)
         if clean_c not in cat_totals:
@@ -1030,8 +843,46 @@ def get_advanced_analytics(
         "total_revenue": round(total_cat_rev, 2),
         "categories": cat_dist_list
     }
+    category_sales = [{"name": c["name"], "value": c["revenue"]} for c in cat_dist_list]
 
-    # 7. Real Product Performance Leaderboard from vendor's actual products
+    # Time-series Trend
+    now = datetime.utcnow()
+    sales_trend = []
+    if time_range == "today":
+        buckets = []
+        for h in range(24):
+            dt = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=23 - h)
+            buckets.append((dt, dt + timedelta(hours=1), dt.strftime("%I %p")))
+    elif time_range in ["week", "7days"]:
+        buckets = []
+        for d in range(7):
+            dt = (now - timedelta(days=6 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
+            buckets.append((dt, dt + timedelta(days=1), dt.strftime("%a %d")))
+    elif time_range in ["year", "6months", "quarter"]:
+        months = 12 if time_range == "year" else (6 if time_range == "6months" else 3)
+        buckets = []
+        for m in range(months):
+            dt = (now - timedelta(days=(months - 1 - m) * 30)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            buckets.append((dt, dt + timedelta(days=32), dt.strftime("%b %Y")))
+    else:
+        buckets = []
+        for d in range(30):
+            dt = (now - timedelta(days=29 - d)).replace(hour=0, minute=0, second=0, microsecond=0)
+            buckets.append((dt, dt + timedelta(days=1), dt.strftime("%b %d")))
+
+    for start_dt, end_dt, label in buckets:
+        bucket_valid_orders = [o for o in valid_orders if o.created_at and start_dt <= o.created_at < end_dt]
+        b_rev = round(sum(o.amount for o in bucket_valid_orders), 2)
+        b_ord = len([o for o in all_orders if o.created_at and start_dt <= o.created_at < end_dt])
+        b_prof = round(sum(calculate_order_profit(o) for o in bucket_valid_orders), 2)
+        sales_trend.append({
+            "name": label,
+            "revenue": b_rev,
+            "orders": b_ord,
+            "profit": b_prof
+        })
+
+    # Product Performance Leaderboard
     sorted_prods = sorted(product_sales, key=lambda x: -x["revenue"])
     max_p_rev = sorted_prods[0]["revenue"] if sorted_prods and sorted_prods[0]["revenue"] > 0 else 1.0
     prod_performance = []
@@ -1046,7 +897,7 @@ def get_advanced_analytics(
             "color": BAR_COLORS[idx % len(BAR_COLORS)]
         })
 
-    # 8. Real Marketplace Vendor Performance Leaderboard across platform vendors
+    # Peer Vendor Performance Leaderboard
     all_platform_vendors = db.query(models.User).filter(models.User.role == 'vendor').all()
     v_rankings = []
     for v in all_platform_vendors:
@@ -1058,7 +909,7 @@ def get_advanced_analytics(
             "name": v_name,
             "revenue": round(v_rev, 2),
             "orders": len(v_orders),
-            "is_current": (v.id == vendor.id)
+            "is_current": (v.id == vendor_id) if vendor_id else False
         })
     v_rankings = sorted(v_rankings, key=lambda x: -x["revenue"])
     max_v_rev = v_rankings[0]["revenue"] if v_rankings and v_rankings[0]["revenue"] > 0 else 1.0
@@ -1100,12 +951,366 @@ def get_advanced_analytics(
         "order_status_distribution": order_status_distribution
     }
 
-# --- Dynamic Analytics Chart Endpoints with Real Database Data ---
-@app.get("/analytics/charts/order-fulfillment")
-@app.get("/vendor/analytics/charts/order-fulfillment")
-def get_order_fulfillment_chart(db: Session = Depends(get_db)):
-    """Returns Order preview percentage and counts of return, replacement and successful orders"""
+@app.get("/admin/analytics", tags=["Admin"], summary="Platform-wide sales and revenue analytics")
+def get_platform_analytics(
+    vendor_id: Optional[str] = None,
+    db: Session = Depends(get_db), 
+    admin: models.User = Depends(auth.get_current_admin)
+):
+    vendors = db.query(models.User).filter(models.User.role == "vendor").all()
+    products = db.query(models.Product).all()
+    
+    total_revenue = 0
+    vendor_stats = []
+    
+    for v in vendors:
+        v_products = [p for p in products if p.vendor_id == v.id]
+        
+        v_revenue = 0
+        v_orders = 0
+        for p in v_products:
+            sales = p.sales or 0
+            v_revenue += sales * p.price
+            v_orders += sales
+        
+        total_revenue += v_revenue
+        
+        vendor_stats.append({
+            "vendor_id": v.id,
+            "vendor_name": v.business_name or f"{v.first_name} {v.last_name}",
+            "email": v.email,
+            "phone_number": v.phone_number,
+            "joined_date": v.joined_date.strftime("%Y-%m-%d") if v.joined_date else "N/A",
+            "rating": v.rating,
+            "revenue": v_revenue,
+            "orders": v_orders,
+            "products": len(v_products),
+            "products_list": [{"title": p.title, "price": p.price, "stock": p.quantity} for p in v_products],
+            "status": v.status
+        })
+    
+    vendor_ranking = sorted(vendor_stats, key=lambda x: x["revenue"], reverse=True)
+    all_vendors_list = [
+        {
+            "id": v.id,
+            "vendor_id": v.id,
+            "name": v.business_name or f"{v.first_name} {v.last_name}",
+            "vendor_name": v.business_name or f"{v.first_name} {v.last_name}",
+            "email": v.email,
+            "phone_number": v.phone_number,
+            "status": v.status,
+            "rating": v.rating
+        }
+        for v in vendors
+    ]
+
+    target_vendor_id = None
+    if vendor_id and vendor_id.strip().lower() not in ["all", "none", "null", ""]:
+        try:
+            target_vendor_id = int(vendor_id)
+        except ValueError:
+            target_vendor_id = None
+
+    analytics_data = compute_analytics_data(db, vendor_id=target_vendor_id, time_range="30days")
+
+    selected_info = None
+    if target_vendor_id:
+        target_vendor = db.query(models.User).filter(models.User.id == target_vendor_id).first()
+        if target_vendor:
+            selected_info = {
+                "id": target_vendor.id,
+                "name": target_vendor.business_name or f"{target_vendor.first_name} {target_vendor.last_name}",
+                "email": target_vendor.email,
+                "phone_number": target_vendor.phone_number,
+                "status": target_vendor.status,
+                "rating": target_vendor.rating
+            }
+
+    summary = {
+        "total_revenue": total_revenue if not target_vendor_id else analytics_data["summary"]["revenue"],
+        "total_vendors": len(vendors),
+        "total_products": len(products) if not target_vendor_id else analytics_data["summary"]["products"],
+        "total_orders": sum(vs["orders"] for vs in vendor_stats) if not target_vendor_id else analytics_data["summary"]["orders"],
+        "revenue": analytics_data["summary"]["revenue"],
+        "gross_revenue": analytics_data["summary"]["gross_revenue"],
+        "refunded_amount": analytics_data["summary"]["refunded_amount"],
+        "profit": analytics_data["summary"]["profit"],
+        "orders": analytics_data["summary"]["orders"],
+        "products": analytics_data["summary"]["products"],
+    }
+
+    return {
+        "summary": summary,
+        "vendor_performance": vendor_ranking,
+        "vendor_performance_ranking": vendor_ranking,
+        "order_status_distribution": analytics_data["order_status_distribution"],
+        "category_distribution": analytics_data["category_distribution"],
+        "product_performance": analytics_data["product_performance"],
+        "peer_vendor_performance": analytics_data["vendor_performance"],
+        "sales_trend": analytics_data["sales_trend"],
+        "vendors": all_vendors_list,
+        "selected_vendor": selected_info,
+        "vendor_id": target_vendor_id or "all"
+    }
+
+@app.get("/admin/analytics/vendor/{vendor_id}", tags=["Admin"], summary="Get comprehensive analytics for a specific vendor")
+def get_vendor_analytics_for_admin(vendor_id: int, db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
+    vendor = db.query(models.User).filter(models.User.id == vendor_id, models.User.role == "vendor").first()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    data = compute_analytics_data(db, vendor_id=vendor_id, time_range="30days")
+    data["vendor"] = {
+        "id": vendor.id,
+        "name": vendor.business_name or f"{vendor.first_name} {vendor.last_name}",
+        "email": vendor.email,
+        "phone_number": vendor.phone_number,
+        "rating": vendor.rating,
+        "status": vendor.status
+    }
+    return data
+
+@app.post("/admin/products/{product_id}/marketing-email", tags=["Admin"], summary="Generate AI marketing email for a product")
+def send_marketing_email(product_id: int, req: schemas.MarketingEmailRequest, db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    print(f"Simulating sending marketing email for product '{product.title}' to customers:\n{req.content}")
+    return {"message": "Marketing email sent to subscribers successfully."}
+
+@app.post("/admin/products/{product_id}/notify-vendor", tags=["Admin"], summary="Notify vendor about their product status")
+def notify_vendor(product_id: int, req: schemas.NotifyVendorRequest, db: Session = Depends(get_db), admin: models.User = Depends(auth.get_current_admin)):
+    product = db.query(models.Product).filter(models.Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    vendor = product.vendor
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+        
+    if req.notification_type == "out_of_stock":
+        action_text = f"Out of Stock Alert for {product.title}"
+    elif req.notification_type == "price_increase":
+        action_text = f"Price Increase Suggestion for {product.title}"
+    else:
+        action_text = f"Notification regarding {product.title}"
+        
+    activity = models.VendorActivity(
+        vendor_id=vendor.id,
+        admin_name=f"{admin.first_name} {admin.last_name}" if admin.first_name else "Admin",
+        action="Notification Sent",
+        remarks=f"Sent email: {action_text}"
+    )
+    db.add(activity)
+    db.commit()
+    
+    print(f"Simulating sending email to vendor {vendor.email}: {action_text}")
+    return {"message": f"Notification '{req.notification_type}' sent to vendor."}
+
+# --- Vendor Routes ---
+@app.get("/vendor/orders", tags=["Vendor"], summary="Get all orders for the logged-in vendor")
+def get_vendor_orders(
+    db: Session = Depends(get_db), 
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    """
+    Returns real-time sold product history / order log for the authenticated vendor.
+    """
+    from collections import defaultdict
+    orders = db.query(models.Order).filter(models.Order.vendor_id == vendor.id).order_by(models.Order.created_at.desc(), models.Order.id.desc()).all()
+    
+    # Precalculate customer master order counts across platform
+    cust_orders = defaultdict(set)
     all_orders = db.query(models.Order).all()
+    for ao in all_orders:
+        if ao.customer_id:
+            gid = getattr(ao, "order_group_id", None) or f"OD-{ao.id:04d}"
+            cust_orders[ao.customer_id].add(gid)
+
+    history = []
+    for o in orders:
+        customer = db.query(models.User).filter(models.User.id == o.customer_id).first() if o.customer_id else None
+        cust_name = f"{customer.first_name or ''} {customer.last_name or ''}".strip() if customer else "Customer"
+        
+        # Match product details
+        product = db.query(models.Product).filter(
+            models.Product.vendor_id == vendor.id,
+            models.Product.title == o.product_name
+        ).first() if o.product_name else None
+        
+        gid = getattr(o, "order_group_id", None) or f"OD-{o.id:04d}"
+        cust_total_orders = len(cust_orders.get(o.customer_id, set())) or 1
+
+        history.append({
+            "order_id": o.id,
+            "order_group_id": gid,
+            "display_order_id": gid,
+            "product_name": o.product_name or "Store Purchase",
+            "quantity": o.quantity or 1,
+            "total_amount": round(o.amount, 2),
+            "status": o.status or "Completed",
+            "payment_method": getattr(o, "payment_method", "upi") or "upi",
+            "return_reason": getattr(o, "return_reason", None),
+            "created_at": o.created_at.strftime("%b %d, %Y • %I:%M %p") if o.created_at else "N/A",
+            "created_at_iso": o.created_at.isoformat() if o.created_at else None,
+            "customer_id": o.customer_id,
+            "customer_name": cust_name,
+            "customer_email": customer.email if customer else "N/A",
+            "customer_total_orders": cust_total_orders,
+            "picture_url": product.picture_url if product else None,
+            "category": product.category if product else "General"
+        })
+    return history
+
+@app.get("/vendor/notifications", tags=["Vendor"], summary="Get unread real-time notifications for the vendor")
+def get_vendor_notifications(db: Session = Depends(get_db), vendor: models.User = Depends(auth.get_current_active_vendor)):
+    activities = db.query(models.VendorActivity).filter(models.VendorActivity.vendor_id == vendor.id).order_by(models.VendorActivity.created_at.desc()).all()
+    return activities
+
+# --- Vendor Profile ---
+@app.put("/vendor/profile", response_model=schemas.User, tags=["Vendor"], summary="Update vendor profile and business details")
+def update_vendor_profile(
+    update_data: dict = Body(...),
+    db: Session = Depends(get_db), 
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    allowed_fields = {"first_name", "last_name", "phone_number", "address", "business_name", "business_category", "gst_number", "profile_picture_url"}
+    for key, value in update_data.items():
+        if key in allowed_fields and hasattr(vendor, key):
+            setattr(vendor, key, value)
+    db.commit()
+    db.refresh(vendor)
+    return vendor
+
+# --- Vendor Products ---
+@app.post("/vendor/products", response_model=schemas.Product, tags=["Vendor"], summary="Create a new product listing")
+async def create_product(
+    title: str = Form(...),
+    category: str = Form(...),
+    price: float = Form(...),
+    quantity: int = Form(...),
+    discount: Optional[float] = Form(0.0),
+    sku: Optional[str] = Form(None),
+    status: Optional[str] = Form("active"),
+    description: Optional[str] = Form(""),
+    profit_margin: Optional[float] = Form(25.0),
+    image: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db), 
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    picture_url = None
+    
+    # Ensure defaults for optional fields
+    if discount is None: discount = 0.0
+    if sku is None: sku = ""
+    if status is None: status = "active"
+    if description is None: description = ""
+    if profit_margin is None: profit_margin = 25.0
+    
+    if image:
+        file_ext = image.filename.split('.')[-1]
+        file_name = f"{uuid.uuid4()}.{file_ext}"
+        file_path = os.path.join("static", "uploads", file_name)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(image.file, buffer)
+        picture_url = f"/static/uploads/{file_name}"
+    
+    ai_content = ai_service.generate_ai_content(title, category)
+    final_desc = f"{description}\n\n[AI Enhanced]: {ai_content['description']}" if description else ai_content['description']
+    
+    db_product = models.Product(
+        title=title, category=category, price=price, quantity=quantity,
+        discount=discount, sku=sku, status=status,
+        description=final_desc, tagline=ai_content['tagline'],
+        marketing_email=ai_content['marketing_email'],
+        picture_url=picture_url, vendor_id=vendor.id,
+        sales=0,
+        profit_margin=profit_margin
+    )
+    
+    try:
+        db.add(db_product)
+        db.commit()
+        db.refresh(db_product)
+    except Exception as e:
+        import traceback
+        with open("crash.txt", "w") as f:
+            f.write(traceback.format_exc())
+        raise e
+    
+    return db_product
+
+@app.get("/vendor/products", response_model=list[schemas.Product], tags=["Vendor"], summary="Get all products for the logged-in vendor")
+def get_vendor_products(db: Session = Depends(get_db), vendor: models.User = Depends(auth.get_current_user)):
+    return db.query(models.Product).filter(models.Product.vendor_id == vendor.id).all()
+
+@app.put("/vendor/products/{product_id}", tags=["Vendor"], summary="Update an existing product")
+def update_product(
+    product_id: int, 
+    update_data: dict = Body(...), 
+    db: Session = Depends(get_db), 
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    prod = db.query(models.Product).filter(models.Product.id == product_id, models.Product.vendor_id == vendor.id).first()
+    if not prod:
+        raise HTTPException(status_code=404)
+    for k, v in update_data.items():
+        if hasattr(prod, k):
+            setattr(prod, k, v)
+    db.commit()
+    return {"message": "Product updated"}
+
+@app.post("/vendor/products/generate-copy", tags=["Vendor"], summary="AI-generated product description and tagline")
+def regenerate_product_copy(
+    data: dict = Body(...),
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    """
+    Generates or regenerates AI description and tagline for a product
+    based on the vendor's title, category, chosen tone (luxury, casual, technical, minimal, persuasive),
+    or custom vendor instruction prompt.
+    """
+    title = str(data.get("title", "")).strip() or "Product"
+    category = str(data.get("category", "")).strip() or "General"
+    tone = str(data.get("tone", "persuasive")).strip().lower()
+    custom_prompt = str(data.get("custom_prompt", "")).strip()
+    
+    generated = ai_service.generate_ai_content(
+        title=title, 
+        category=category, 
+        tone=tone, 
+        custom_prompt=custom_prompt
+    )
+    return generated
+
+@app.delete("/vendor/products/{product_id}", tags=["Vendor"], summary="Delete a product listing")
+def delete_product(product_id: int, db: Session = Depends(get_db), vendor: models.User = Depends(auth.get_current_active_vendor)):
+    prod = db.query(models.Product).filter(models.Product.id == product_id, models.Product.vendor_id == vendor.id).first()
+    if prod:
+        db.delete(prod)
+        db.commit()
+    return {"message": "Deleted"}
+
+# --- Vendor Analytics ---
+@app.get("/vendor/analytics/advanced", tags=["Vendor"], summary="Full advanced analytics for the vendor's store")
+def get_advanced_analytics(
+    time_range: str = "month", 
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: Session = Depends(get_db), 
+    vendor: models.User = Depends(auth.get_current_active_vendor)
+):
+    return compute_analytics_data(db, vendor_id=vendor.id, time_range=time_range)
+
+# --- Dynamic Analytics Chart Endpoints with Real Database Data ---
+@app.get("/analytics/charts/order-fulfillment", tags=["Analytics"], summary="Order return/replacement/successful breakdown")
+@app.get("/vendor/analytics/charts/order-fulfillment", tags=["Analytics"], summary="Vendor-specific order fulfillment breakdown")
+def get_order_fulfillment_chart(vendor_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Returns Order preview percentage and counts of return, replacement and successful orders"""
+    query = db.query(models.Order)
+    if vendor_id:
+        query = query.filter(models.Order.vendor_id == vendor_id)
+    all_orders = query.all()
     returned_orders = [o for o in all_orders if o.status == "Returned"]
     replaced_orders = [o for o in all_orders if o.status == "Replaced"]
     successful_orders = [o for o in all_orders if o.status not in ["Returned", "Replaced"]]
@@ -1157,9 +1362,9 @@ def get_order_fulfillment_chart(db: Session = Depends(get_db)):
         ]
     }
 
-@app.get("/analytics/charts/category-distribution")
-@app.get("/vendor/analytics/charts/category-distribution")
-def get_category_distribution_chart(db: Session = Depends(get_db)):
+@app.get("/analytics/charts/category-distribution", tags=["Analytics"], summary="Sales distribution by product category")
+@app.get("/vendor/analytics/charts/category-distribution", tags=["Analytics"], summary="Vendor category sales distribution")
+def get_category_distribution_chart(vendor_id: Optional[int] = None, db: Session = Depends(get_db)):
     """Returns Category revenue share for donut chart from real orders"""
     import re
     def clean_category_name(cat_str):
@@ -1182,8 +1387,14 @@ def get_category_distribution_chart(db: Session = Depends(get_db)):
         return cleaned.title() if cleaned else "General"
 
     PALETTE = ['#2563eb', '#059669', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
-    valid_orders = db.query(models.Order).filter(models.Order.status != 'Returned').all()
-    products = db.query(models.Product).all()
+    orders_query = db.query(models.Order).filter(models.Order.status != 'Returned')
+    prods_query = db.query(models.Product)
+    if vendor_id:
+        orders_query = orders_query.filter(models.Order.vendor_id == vendor_id)
+        prods_query = prods_query.filter(models.Product.vendor_id == vendor_id)
+        
+    valid_orders = orders_query.all()
+    products = prods_query.all()
     
     cat_totals = {}
     for o in valid_orders:
@@ -1209,9 +1420,19 @@ def get_category_distribution_chart(db: Session = Depends(get_db)):
         "categories": cat_dist_list
     }
 
-@app.get("/analytics/charts/vendor-performance")
-@app.get("/vendor/analytics/charts/vendor-performance")
-def get_vendor_performance_chart(db: Session = Depends(get_db)):
+@app.get("/analytics/charts/product-performance", tags=["Analytics"], summary="Top product performance leaderboard")
+@app.get("/vendor/analytics/charts/product-performance", tags=["Analytics"], summary="Vendor-specific product performance leaderboard")
+def get_product_performance_chart(vendor_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Returns Top products for multi-bar leaderboard"""
+    data = compute_analytics_data(db, vendor_id=vendor_id, time_range="30days")
+    return {
+        "status": "success",
+        "products": data.get("product_performance", [])
+    }
+
+@app.get("/analytics/charts/vendor-performance", tags=["Analytics"], summary="Top vendor performance leaderboard")
+@app.get("/vendor/analytics/charts/vendor-performance", tags=["Analytics"], summary="Vendor-specific performance chart")
+def get_vendor_performance_chart(vendor_id: Optional[int] = None, db: Session = Depends(get_db)):
     """Returns Comparative revenue & order counts for multi-bar leaderboard from real orders"""
     BAR_COLORS = ['#2563eb', '#0284c7', '#0d9488', '#64748b', '#475569']
     all_platform_vendors = db.query(models.User).filter(models.User.role == 'vendor').all()
@@ -1224,7 +1445,8 @@ def get_vendor_performance_chart(db: Session = Depends(get_db)):
             "id": v.id,
             "name": v_name,
             "revenue": round(v_rev, 2),
-            "orders": len(v_orders)
+            "orders": len(v_orders),
+            "is_current": (v.id == vendor_id) if vendor_id else False
         })
     v_rankings = sorted(v_rankings, key=lambda x: -x["revenue"])
     max_v_rev = v_rankings[0]["revenue"] if v_rankings and v_rankings[0]["revenue"] > 0 else 1.0
@@ -1237,6 +1459,7 @@ def get_vendor_performance_chart(db: Session = Depends(get_db)):
             "revenue": v["revenue"],
             "orders": v["orders"],
             "percentage": pct,
+            "is_current": v.get("is_current", False),
             "color": BAR_COLORS[idx % len(BAR_COLORS)]
         })
     return {
@@ -1245,8 +1468,8 @@ def get_vendor_performance_chart(db: Session = Depends(get_db)):
         "vendors": vendor_performance_list
     }
 
-@app.get("/analytics/charts/revenue-velocity")
-@app.get("/vendor/analytics/charts/revenue-velocity")
+@app.get("/analytics/charts/revenue-velocity", tags=["Analytics"], summary="Daily revenue trend over the past 30 days")
+@app.get("/vendor/analytics/charts/revenue-velocity", tags=["Analytics"], summary="Vendor daily revenue trend")
 def get_revenue_velocity_chart_endpoint(db: Session = Depends(get_db)):
     """Returns 30-day Revenue Velocity Trajectory matching real store orders"""
     from datetime import datetime, timedelta
@@ -1275,7 +1498,7 @@ def get_revenue_velocity_chart_endpoint(db: Session = Depends(get_db)):
 # ============================================================
 # 1. Inventory Tracking APIs
 # ============================================================
-@app.get("/vendor/inventory")
+@app.get("/vendor/inventory", tags=["Vendor"], summary="Inventory overview with demand forecasts and restock alerts")
 def get_vendor_inventory(
     db: Session = Depends(get_db),
     vendor: models.User = Depends(auth.get_current_active_vendor)
@@ -1332,7 +1555,7 @@ def get_vendor_inventory(
         "inventory": items
     }
 
-@app.post("/vendor/inventory/{product_id}/restock")
+@app.post("/vendor/inventory/{product_id}/restock", tags=["Vendor"], summary="Mark a product as restocked")
 def restock_product(
     product_id: int,
     data: dict = Body(...),
@@ -1363,7 +1586,7 @@ def restock_product(
         "status": product.status
     }
 
-@app.get("/admin/inventory")
+@app.get("/admin/inventory", tags=["Admin"], summary="Platform-wide inventory overview with low-stock alerts")
 def get_admin_inventory_health(
     db: Session = Depends(get_db),
     admin: models.User = Depends(auth.get_current_admin)
@@ -1406,7 +1629,7 @@ def get_admin_inventory_health(
 # ============================================================
 # 2. SQL-Based Customer Segmentation
 # ============================================================
-@app.get("/admin/analytics/customer-segments")
+@app.get("/admin/analytics/customer-segments", tags=["Admin"], summary="ML customer segmentation (RFM-based)")
 def get_admin_customer_segments(
     db: Session = Depends(get_db),
     admin: models.User = Depends(auth.get_current_admin)
@@ -1469,7 +1692,7 @@ def get_admin_customer_segments(
         "segments": res_segments
     }
 
-@app.get("/vendor/analytics/customer-segments")
+@app.get("/vendor/analytics/customer-segments", tags=["Vendor"], summary="Customer segmentation for vendor's buyers")
 def get_vendor_customer_segments(
     db: Session = Depends(get_db),
     vendor: models.User = Depends(auth.get_current_active_vendor)
@@ -1500,7 +1723,7 @@ def get_vendor_customer_segments(
 # ============================================================
 # 3. Recommendation Engines (Rule-Based & Vector Search)
 # ============================================================
-@app.get("/shop/recommendations/rule-based")
+@app.get("/shop/recommendations/rule-based", tags=["AI Services"], summary="Rule-based product recommendations")
 def get_rule_recommendations(
     product_id: int | None = None,
     db: Session = Depends(get_db)
@@ -1520,12 +1743,12 @@ def get_rule_recommendations(
             "picture_url": p.picture_url,
             "rating": p.rating or 4.8,
             "sales": p.sales or 0,
-            "reason": f"🔥 Top Seller in {p.category}"
+            "reason": f"ðŸ”¥ Top Seller in {p.category}"
         }
         for p in recs
     ]
 
-@app.get("/shop/recommendations/semantic")
+@app.get("/shop/recommendations/semantic", tags=["AI Services"], summary="Semantic vector search product recommendations")
 def get_semantic_recommendations(
     product_id: int | None = None,
     query: str | None = None,
@@ -1546,7 +1769,7 @@ def get_semantic_recommendations(
             "picture_url": p.picture_url,
             "rating": p.rating or 4.8,
             "tagline": p.tagline,
-            "reason": "✨ AI Semantic Match"
+            "reason": "AI Semantic Match"
         }
         for p in recs
     ]
@@ -1554,7 +1777,7 @@ def get_semantic_recommendations(
 # ============================================================
 # 4. Analytical Data Validation
 # ============================================================
-@app.get("/vendor/analytics/validation")
+@app.get("/vendor/analytics/validation", tags=["Vendor"], summary="Data quality validation for vendor analytics")
 def validate_vendor_analytics(
     db: Session = Depends(get_db),
     vendor: models.User = Depends(auth.get_current_active_vendor)
@@ -1595,7 +1818,7 @@ def validate_vendor_analytics(
 # ============================================================
 # 5. Machine Learning Time-Series Inventory Forecasting
 # ============================================================
-@app.get("/vendor/analytics/inventory-forecast")
+@app.get("/vendor/analytics/inventory-forecast", tags=["Vendor"], summary="Predictive inventory demand forecasting")
 def get_inventory_forecast(
     product_id: int | None = None,
     db: Session = Depends(get_db),
@@ -1636,7 +1859,7 @@ def get_inventory_forecast(
 # ============================================================
 # 6. LLM Sentiment Analysis & Customer Product Reviews
 # ============================================================
-@app.get("/vendor/analytics/reviews-sentiment")
+@app.get("/vendor/analytics/reviews-sentiment", tags=["Vendor"], summary="NLP sentiment analysis of product reviews")
 def get_vendor_review_sentiment(
     product_id: Optional[int] = None,
     db: Session = Depends(get_db),
@@ -1663,6 +1886,7 @@ def get_vendor_review_sentiment(
     for r in reviews:
         cust = db.query(models.User).filter(models.User.id == r.customer_id).first()
         prod = db.query(models.Product).filter(models.Product.id == r.product_id).first()
+        nlp = ai_service.analyze_single_review(r.comment, r.rating)
         formatted_reviews.append({
             "id": r.id,
             "product_id": r.product_id,
@@ -1670,9 +1894,9 @@ def get_vendor_review_sentiment(
             "customer_name": f"{cust.first_name or ''} {cust.last_name or ''}".strip() if cust else "Verified Buyer",
             "rating": r.rating,
             "comment": r.comment or "",
-            "pros": r.pros or "",
-            "cons": r.cons or "",
-            "sentiment_score": r.sentiment_score or 0.0,
+            "pros": nlp.get("pros") or r.pros or "",
+            "cons": nlp.get("cons") or r.cons or "",
+            "sentiment_score": nlp.get("sentiment_score") if nlp.get("sentiment_score") is not None else (r.sentiment_score or 0.0),
             "created_at": r.created_at.strftime("%b %d, %Y %I:%M %p") if r.created_at else "Recently"
         })
 
@@ -1681,13 +1905,17 @@ def get_vendor_review_sentiment(
     for p in products:
         p_revs = db.query(models.Review).filter(models.Review.product_id == p.id).all()
         p_total = len(p_revs)
-        p_avg_rating = round(sum(r.rating for r in p_revs) / p_total, 1) if p_total > 0 else 0.0
-        
-        p_scores = [r.sentiment_score if (hasattr(r, 'sentiment_score') and r.sentiment_score is not None) else (r.rating - 3) / 2.0 for r in p_revs]
-        p_pos = sum(1 for s in p_scores if s > 0.1)
-        p_neg = sum(1 for s in p_scores if s < -0.1)
-        p_pos_pct = round((p_pos / p_total) * 100) if p_total > 0 else 0
-        p_neg_pct = round((p_neg / p_total) * 100) if p_total > 0 else 0
+        if p_total > 0:
+            p_sent = ai_service.analyze_reviews_sentiment(p_revs)
+            p_avg_rating = p_sent["average_rating"]
+            p_pos_pct = p_sent["positive_percentage"]
+            p_neg_pct = p_sent["negative_percentage"]
+            p_score = p_sent["sentiment_score"]
+        else:
+            p_avg_rating = 0.0
+            p_pos_pct = 0
+            p_neg_pct = 0
+            p_score = 0.0
 
         products_with_sentiment.append({
             "id": p.id,
@@ -1697,14 +1925,14 @@ def get_vendor_review_sentiment(
             "average_rating": p_avg_rating,
             "positive_percentage": p_pos_pct,
             "negative_percentage": p_neg_pct,
-            "sentiment_score": round(sum(p_scores) / p_total, 2) if p_total > 0 else 0.0
+            "sentiment_score": p_score
         })
 
     sentiment_data["reviews"] = formatted_reviews
     sentiment_data["products"] = products_with_sentiment
     return sentiment_data
 
-@app.post("/shop/reviews")
+@app.post("/shop/reviews", tags=["Shop"], summary="Submit a product review (NLP sentiment is auto-analysed)")
 def submit_product_review(
     data: dict = Body(...),
     db: Session = Depends(get_db),
@@ -1750,12 +1978,12 @@ def submit_product_review(
     db.refresh(review)
     
     return {
-        "message": "Review submitted successfully! Thank you for your feedback. ⭐",
+        "message": "Review submitted successfully! Thank you for your feedback. â­",
         "review_id": review.id,
         "sentiment": nlp
     }
 
-@app.get("/shop/products/{product_id}/reviews")
+@app.get("/shop/products/{product_id}/reviews", tags=["Shop"], summary="Get all reviews for a product with sentiment scores")
 def get_product_reviews(
     product_id: int,
     db: Session = Depends(get_db)
@@ -1803,7 +2031,7 @@ async def websocket_vendor_endpoint(websocket: WebSocket, vendor_id: int):
 # ============================================================
 # 8. Vendor Performance Benchmarking Metrics
 # ============================================================
-@app.get("/vendor/analytics/benchmarking")
+@app.get("/vendor/analytics/benchmarking", tags=["Vendor"], summary="Benchmark vendor performance against platform averages")
 def get_vendor_benchmarking(
     db: Session = Depends(get_db),
     vendor: models.User = Depends(auth.get_current_active_vendor)
@@ -1883,7 +2111,7 @@ def get_vendor_benchmarking(
                 "metric": "Customer Satisfaction Rating",
                 "vendor_value": round(vendor_rating, 1),
                 "market_average": round(marketplace_rating, 1),
-                "unit": "⭐",
+                "unit": "★",
                 "diff_percent": round(((vendor_rating - marketplace_rating) / 5.0) * 100, 1),
                 "status": "above" if vendor_rating >= marketplace_rating else "below",
                 "insight": "Top-tier customer ratings build superior platform trust." if vendor_rating >= marketplace_rating else "Review customer sentiment feedback to address common pain points."
@@ -1941,7 +2169,7 @@ def resolve_export_vendor(token: Optional[str], db: Session, request: Request):
         raise HTTPException(status_code=403, detail="Only verified vendors can export store data.")
     return vendor
 
-@app.get("/vendor/export/orders.csv")
+@app.get("/vendor/export/orders.csv", tags=["Vendor"], summary="Export order history as CSV")
 def export_vendor_orders_csv(
     request: Request,
     token: Optional[str] = None,
@@ -1975,7 +2203,7 @@ def export_vendor_orders_csv(
         }
     )
 
-@app.get("/vendor/export/inventory.csv")
+@app.get("/vendor/export/inventory.csv", tags=["Vendor"], summary="Export inventory data as CSV")
 def export_vendor_inventory_csv(
     request: Request,
     token: Optional[str] = None,
@@ -2016,7 +2244,7 @@ def export_vendor_inventory_csv(
 # ============================================================
 # 10. RAG-Powered AI Shopping Assistant API
 # ============================================================
-@app.post("/shop/ai-assistant")
+@app.post("/shop/ai-assistant", tags=["AI Services"], summary="RAG-powered AI shopping assistant chatbot")
 def chat_with_shopping_assistant(
     data: dict = Body(...),
     db: Session = Depends(get_db)
@@ -2037,7 +2265,7 @@ def chat_with_shopping_assistant(
 # ============================================================
 # 11. AI Data Analyst (Text-to-SQL) for Vendors API
 # ============================================================
-@app.post("/vendor/ai-analyst")
+@app.post("/vendor/ai-analyst", tags=["AI Services"], summary="AI analyst — answers vendor analytics questions in natural language")
 def query_ai_data_analyst(
     data: dict = Body(...),
     db: Session = Depends(get_db),
@@ -2059,3 +2287,4 @@ if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8010, reload=True)
 
  
+

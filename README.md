@@ -316,3 +316,158 @@ Follow this end-to-end walkthrough to test and experience all features across th
 - `GET /admin/analytics` — Platform GMV, order volume, and seller health metrics.
 - `GET /admin/vendors` — Manage and inspect vendor directory.
 - `GET /admin/segments` — RFM customer segmentation clusters.
+
+---
+
+## 🐳 Docker Setup
+
+Run the full stack (PostgreSQL + FastAPI + React) with a single command:
+
+```bash
+# First time — build all images and start containers
+docker-compose up --build
+
+# Subsequent runs (detached mode)
+docker-compose up -d
+
+# Stop and remove containers (data is preserved in named volumes)
+docker-compose down
+```
+
+| Service | URL |
+|---|---|
+| React Frontend | http://localhost:80 |
+| FastAPI Backend | http://localhost:8010 |
+| Swagger API Docs | http://localhost:8010/docs |
+| ReDoc API Docs | http://localhost:8010/redoc |
+| PostgreSQL | localhost:5432 |
+
+### Environment Variables
+
+Copy `backend/.env.example` to `backend/.env` and set your values before running Docker:
+
+```bash
+cp backend/.env.example backend/.env
+# Edit .env with your DB password, secret key, SMTP settings
+```
+
+---
+
+## 🧪 Running Unit Tests
+
+The test suite uses **pytest** with an in-memory SQLite database — no live PostgreSQL needed.
+
+```bash
+# Navigate to the backend directory
+cd shop-sense/backend
+
+# Activate the virtual environment (Windows)
+.\venv\Scripts\Activate.ps1
+
+# Run all 25 unit tests
+python -m pytest tests/ -v
+
+# Run a specific test class
+python -m pytest tests/test_unit.py::TestAuth -v
+```
+
+**Test Coverage:**
+
+| Test Class | What's Tested |
+|---|---|
+| `TestAuth` | Register, login, duplicate email, wrong password, JWT, `/auth/me` |
+| `TestShopProducts` | Product listing, recommendations, semantic search |
+| `TestProtectedRoutes` | 401 enforcement on all vendor/admin/checkout routes |
+| `TestPasswordReset` | Known/unknown email reset |
+| `TestAIAgent` | Discount/restock logic, max 3 recs, dry-run email |
+
+---
+
+## ⚙️ CI/CD — GitHub Actions
+
+Two workflows run automatically on every push/PR to `main`:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| **ShopSense CI** (`.github/workflows/ci.yml`) | Push / PR → main | Runs `pytest tests/` (Python 3.11) + `npm run build` (Node 20) |
+| **Weekly AI Agent** (`.github/workflows/weekly_agent.yml`) | Every Monday 8 AM UTC | Runs the AI vendor advisor and emails strategic recommendations |
+
+**GitHub Actions Secrets** required for the Weekly Agent:
+- `DATABASE_URL` — Production PostgreSQL connection string
+- `SMTP_USER` — Gmail address for sending reports
+- `SMTP_PASS` — Gmail App Password
+
+---
+
+## 🤖 AI Agent — Weekly Vendor Advisor
+
+The autonomous AI agent (`backend/agent_weekly.py`) runs weekly and emails each active vendor with personalised strategic advice:
+
+```bash
+# Test locally in dry-run mode (prints emails, doesn't send)
+cd backend
+DRY_RUN=true python agent_weekly.py
+
+# Run with live SMTP (set env vars first)
+SMTP_USER=you@gmail.com SMTP_PASS=yourapppassword python agent_weekly.py
+```
+
+**What the agent analyses:**
+- 📦 **High stock + low sales** → Recommends a discount percentage
+- 🔥 **Low stock + high sales** → Triggers urgent restock alert
+- ⚠️ **Inactive products** → Suggests re-activation
+- 📉 **Zero/low revenue** → Store-wide growth recommendations
+
+**Email delivery** uses Python's built-in `smtplib` with Gmail SMTP. For Gmail, generate an **App Password** (not your main password):  
+Google Account → Security → 2-Step Verification → App Passwords
+
+---
+
+## ☁️ Cloud Deployment (Render.com)
+
+Deploy the full stack to [Render.com](https://render.com) (free tier available):
+
+1. **Push to GitHub** — ensure your repo is on GitHub
+2. **Create a new Blueprint** in Render dashboard → point to `render.yaml` in this repo
+3. Render will automatically provision:
+   - A **FastAPI web service** (Docker) on a free instance
+   - A **PostgreSQL 15** managed database
+4. **Set Secrets** in Render dashboard:
+   - `SMTP_USER` and `SMTP_PASS` for the AI agent emails
+5. Access your live API at `https://shopsense-backend.onrender.com/docs`
+
+> **Note:** Free tier instances on Render spin down after 15 minutes of inactivity. For production, upgrade to a paid plan.
+
+---
+
+## 📁 Project Structure
+
+```
+shop-sense/
+├── backend/
+│   ├── main.py              # FastAPI routes (all endpoints)
+│   ├── ai_service.py        # AI/ML: vector embeddings, NLP, forecasting
+│   ├── agent_weekly.py      # 🆕 Autonomous weekly vendor advisor agent
+│   ├── models.py            # SQLAlchemy ORM models
+│   ├── schemas.py           # Pydantic schemas
+│   ├── auth.py              # JWT authentication helpers
+│   ├── database.py          # PostgreSQL connection
+│   ├── seed.py              # Database seeder
+│   ├── requirements.txt     # 🆕 Pinned Python dependencies
+│   ├── Dockerfile           # 🆕 Backend Docker image
+│   ├── pytest.ini           # 🆕 pytest configuration
+│   ├── .env.example         # 🆕 Environment variable template
+│   └── tests/
+│       └── test_unit.py     # 🆕 25 unit tests (pytest + TestClient)
+├── frontend/
+│   ├── src/                 # React 18 + Vite application
+│   ├── Dockerfile           # 🆕 Frontend Docker image (multi-stage)
+│   └── nginx.conf           # 🆕 nginx config for SPA + API proxy
+├── .github/
+│   └── workflows/
+│       ├── ci.yml           # 🆕 CI: tests + build on every push
+│       └── weekly_agent.yml # 🆕 Weekly AI vendor emails (cron)
+├── docker-compose.yml       # 🆕 Full stack orchestration
+├── render.yaml              # 🆕 Render.com Blueprint (cloud deploy)
+└── README.md                # This file
+```

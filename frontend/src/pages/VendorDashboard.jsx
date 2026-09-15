@@ -6,7 +6,8 @@ import {
   Eye, Mail, Bell, AlertTriangle, TrendingUp, Sparkles, CheckCircle2, ShieldCheck, 
   RotateCcw, RefreshCw, Zap, Star, MessageSquare, ThumbsUp, ThumbsDown, Filter,
   Download, FileSpreadsheet, Activity, Play, Send, Bot, Database, Maximize2, Minimize2, ShoppingBag,
-  Banknote, Smartphone, CreditCard, RefreshCcw, Clock, AlertCircle, Info, ArrowUpDown
+  Banknote, Smartphone, CreditCard, RefreshCcw, Clock, AlertCircle, Info, ArrowUpDown,
+  List
 } from 'lucide-react';
 import { 
   LineChart, Line, BarChart, Bar, PieChart, Pie, AreaChart, Area, 
@@ -1562,10 +1563,10 @@ const ReviewSentiment = () => {
 
         <div className="glass-panel text-center">
           <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>CRITICAL FEEDBACK</p>
-          <h2 style={{ margin: 0, fontSize: '2rem', color: data.total_reviews === 0 ? 'var(--text-muted)' : data.negative_percentage > 10 ? '#ef4444' : 'var(--text-muted)' }}>
+          <h2 style={{ margin: 0, fontSize: '2rem', color: data.total_reviews === 0 ? 'var(--text-muted)' : data.negative_percentage > 0 ? '#ef4444' : 'var(--text-muted)' }}>
             {data.total_reviews === 0 ? '0%' : `${data.negative_percentage}%`}
           </h2>
-          <span style={{ fontSize: '0.75rem', color: data.negative_percentage > 10 ? '#ef4444' : 'var(--text-muted)' }}>
+          <span style={{ fontSize: '0.75rem', color: data.negative_percentage > 0 ? '#ef4444' : 'var(--text-muted)' }}>
             {data.negative_percentage > 0 ? 'Areas for improvement' : 'Zero critical issues'}
           </span>
         </div>
@@ -3907,25 +3908,132 @@ const Profile = () => {
 const Notifications = () => {
   const { apiFetch } = useStore();
   const [notifications, setNotifications] = useState([]);
+  const [filterType, setFilterType] = useState('all');
 
   useEffect(() => {
-    apiFetch('/vendor/notifications').then(res => setNotifications(res)).catch(err => console.error(err));
+    apiFetch('/vendor/notifications').then(res => setNotifications(res || [])).catch(err => console.error(err));
   }, []);
 
+  const filtered = useMemo(() => {
+    if (filterType === 'sold') return notifications.filter(n => n.action?.includes('New Order') || n.action?.includes('Product Sold'));
+    if (filterType === 'returns') return notifications.filter(n => n.action?.toLowerCase().includes('return') || n.action?.toLowerCase().includes('replace'));
+    if (filterType === 'system') return notifications.filter(n => !n.action?.includes('New Order') && !n.action?.includes('Product Sold') && !n.action?.toLowerCase().includes('return') && !n.action?.toLowerCase().includes('replace'));
+    return notifications;
+  }, [notifications, filterType]);
+
+  const orderCount = notifications.filter(n => n.action?.includes('New Order') || n.action?.includes('Product Sold')).length;
+  const returnCount = notifications.filter(n => n.action?.toLowerCase().includes('return') || n.action?.toLowerCase().includes('replace')).length;
+
   return (
-    <div className="glass-panel animate-fade-in" style={{ maxWidth: '800px', margin: '0 auto' }}>
-      <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '2rem' }}>
-        <Bell size={24} style={{ color: '#38bdf8' }} /> Notifications
-      </h2>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        {notifications.length === 0 ? (
-          <p style={{ color: 'var(--text-muted)' }}>No notifications yet.</p>
+    <div className="glass-panel animate-fade-in" style={{ maxWidth: '850px', margin: '0 auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+        <div>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+            <Bell size={24} style={{ color: '#38bdf8' }} /> Notifications ({notifications.length})
+          </h2>
+          <p style={{ margin: '0.25rem 0 0 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            Real-time feed of new customer orders, buyer return/replacement requests, and store status updates.
+          </p>
+        </div>
+
+        {/* Filter Tabs */}
+        <div style={{ display: 'flex', gap: '0.4rem' }}>
+          {[
+            { id: 'all', label: `All (${notifications.length})` },
+            { id: 'sold', label: `🛍️ Orders (${orderCount})` },
+            { id: 'returns', label: `🔄 Returns (${returnCount})` },
+            { id: 'system', label: `ℹ️ System` }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setFilterType(tab.id)}
+              style={{
+                padding: '0.35rem 0.75rem',
+                borderRadius: '20px',
+                border: '1px solid',
+                borderColor: filterType === tab.id ? 'var(--primary-color)' : '#eaeaec',
+                background: filterType === tab.id ? 'var(--primary-color)' : '#ffffff',
+                color: filterType === tab.id ? '#ffffff' : '#535766',
+                fontWeight: 700,
+                fontSize: '0.75rem',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+        {filtered.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '3rem 1rem', background: '#fafbfc', borderRadius: '10px', border: '1px dashed #eaeaec', color: 'var(--text-muted)' }}>
+            <Bell size={32} style={{ opacity: 0.3, marginBottom: '0.5rem' }} />
+            <p style={{ margin: 0, fontWeight: 700 }}>No notifications found in this category.</p>
+          </div>
         ) : (
-          notifications.map(n => (
-            <div key={n.id} style={{ padding: '1rem', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)' }}>
-              <strong>{n.action}</strong>: {n.remarks}
-            </div>
-          ))
+          filtered.map(n => {
+            const isOrder = n.action?.includes('New Order') || n.action?.includes('Product Sold');
+            const isReturn = n.action?.toLowerCase().includes('return');
+            const isReplace = n.action?.toLowerCase().includes('replace');
+
+            const borderColor = isOrder ? 'rgba(16, 185, 129, 0.4)' : isReturn ? 'rgba(239, 68, 68, 0.4)' : isReplace ? 'rgba(59, 130, 246, 0.4)' : 'var(--border-color)';
+            const bgColor = isOrder ? 'rgba(16, 185, 129, 0.03)' : isReturn ? 'rgba(239, 68, 68, 0.03)' : isReplace ? 'rgba(59, 130, 246, 0.03)' : 'rgba(255, 255, 255, 0.02)';
+            const borderLeft = isOrder ? '4px solid #10b981' : isReturn ? '4px solid #ef4444' : isReplace ? '4px solid #3b82f6' : '4px solid #38bdf8';
+
+            return (
+              <div 
+                key={n.id} 
+                style={{ 
+                  padding: '1.1rem 1.25rem', 
+                  borderRadius: '10px', 
+                  background: bgColor, 
+                  border: `1px solid ${borderColor}`,
+                  borderLeft: borderLeft,
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.02)'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    {isOrder ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: '#e6f9f4', color: '#03a685', padding: '0.15rem 0.55rem', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 800 }}>
+                        <ShoppingBag size={12} /> New Order
+                      </span>
+                    ) : isReturn ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: '#fff1f4', color: '#ef4444', padding: '0.15rem 0.55rem', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 800 }}>
+                        <RotateCcw size={12} /> Return Request
+                      </span>
+                    ) : isReplace ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: '#eff6ff', color: '#3b82f6', padding: '0.15rem 0.55rem', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 800 }}>
+                        <RefreshCw size={12} /> Replacement Request
+                      </span>
+                    ) : (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: '#f0f9ff', color: '#0284c7', padding: '0.15rem 0.55rem', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 800 }}>
+                        <Info size={12} /> {n.action?.split(':')[0] || 'System Update'}
+                      </span>
+                    )}
+                  </div>
+
+                  {n.created_at && (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 600 }}>
+                      <Clock size={12} />
+                      {new Date(n.created_at).toLocaleString('en-IN', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                  {n.action}
+                </div>
+                {n.remarks && (
+                  <div style={{ fontSize: '0.85rem', color: '#535766', marginTop: '0.3rem', lineHeight: 1.4 }}>
+                    {n.remarks}
+                  </div>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
     </div>
@@ -3941,6 +4049,7 @@ const SoldOrders = () => {
   const [selectedFilter, setSelectedFilter] = useState('All');
   const [sortBy, setSortBy] = useState('newest');
   const [selectedOrderDetails, setSelectedOrderDetails] = useState(null);
+  const [viewMode, setViewMode] = useState('grouped'); // 'grouped' | 'flat'
 
   // Sync with browser localStorage for any return/replacement requests submitted in this environment
   const [returnedOrderIds] = useState(() => {
@@ -4013,6 +4122,9 @@ const SoldOrders = () => {
       (o.product_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (o.customer_name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       String(o.order_id).includes(searchTerm) ||
+      String(o.display_order_id || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      String(o.order_group_id || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      String(o.customer_id || '').includes(searchTerm) ||
       paymentMethod.includes(searchTerm.toLowerCase());
 
     if (!matchesSearch) return false;
@@ -4056,6 +4168,38 @@ const SoldOrders = () => {
     }
     return 0;
   });
+
+  // Group filtered orders into master order list
+  const orderGroups = useMemo(() => {
+    const groups = [];
+    const map = new Map();
+
+    filteredOrders.forEach(o => {
+      const gid = o.display_order_id || o.order_group_id || `OD-${o.order_id}`;
+      if (!map.has(gid)) {
+        const newGroup = {
+          order_group_id: gid,
+          customer_id: o.customer_id,
+          customer_name: o.customer_name,
+          customer_email: o.customer_email,
+          customer_total_orders: o.customer_total_orders || 1,
+          created_at: o.created_at,
+          payment_method: o.payment_method,
+          items: [],
+          total_amount: 0,
+          total_quantity: 0
+        };
+        map.set(gid, newGroup);
+        groups.push(newGroup);
+      }
+      const group = map.get(gid);
+      group.items.push(o);
+      group.total_amount += (o.total_amount || 0);
+      group.total_quantity += (o.quantity || 1);
+    });
+
+    return groups;
+  }, [filteredOrders]);
 
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.75rem' }}>
@@ -4345,6 +4489,50 @@ const SoldOrders = () => {
             </button>
           ))}
         </div>
+
+        {/* View Mode Toggle: Grouped Order List vs Flat Rows */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', background: '#f1f5f9', padding: '0.25rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+          <button
+            onClick={() => setViewMode('grouped')}
+            style={{
+              padding: '0.4rem 0.75rem',
+              borderRadius: '6px',
+              border: 'none',
+              background: viewMode === 'grouped' ? '#ffffff' : 'transparent',
+              color: viewMode === 'grouped' ? 'var(--primary-color)' : '#64748b',
+              fontWeight: 700,
+              fontSize: '0.78rem',
+              cursor: 'pointer',
+              boxShadow: viewMode === 'grouped' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.35rem',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <Package size={13} /> Order List (Grouped)
+          </button>
+          <button
+            onClick={() => setViewMode('flat')}
+            style={{
+              padding: '0.4rem 0.75rem',
+              borderRadius: '6px',
+              border: 'none',
+              background: viewMode === 'flat' ? '#ffffff' : 'transparent',
+              color: viewMode === 'flat' ? 'var(--primary-color)' : '#64748b',
+              fontWeight: 700,
+              fontSize: '0.78rem',
+              cursor: 'pointer',
+              boxShadow: viewMode === 'flat' ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.35rem',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <List size={13} /> Flat Items View
+          </button>
+        </div>
       </div>
 
       {/* Orders Table */}
@@ -4352,7 +4540,7 @@ const SoldOrders = () => {
         {/* Table Column Headers */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '85px 2fr 85px 130px 1.3fr 1.6fr 1.2fr 115px',
+          gridTemplateColumns: '125px 2fr 80px 125px 1.2fr 1.5fr 1.4fr 115px',
           padding: '1rem 1.5rem',
           background: 'rgba(255,255,255,0.04)',
           borderBottom: '1px solid rgba(255,255,255,0.08)',
@@ -4385,7 +4573,7 @@ const SoldOrders = () => {
             style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.2rem', userSelect: 'none', color: sortBy === 'newest' || sortBy === 'oldest' ? 'var(--primary-color)' : 'inherit' }}
             title="Click to sort by date"
           >
-            BUYER & DATE {sortBy === 'newest' ? '▼' : sortBy === 'oldest' ? '▲' : '⇅'}
+            BUYER & CUSTOMER {sortBy === 'newest' ? '▼' : sortBy === 'oldest' ? '▲' : '⇅'}
           </div>
           <div style={{ textAlign: 'center' }}>ORDER STATUS</div>
         </div>
@@ -4418,16 +4606,17 @@ const SoldOrders = () => {
               </button>
             )}
           </div>
-        ) : (
-          filteredOrders.map(o => {
+        ) : (() => {
+          const renderOrderRow = (o, itemIdx, totalInGroup) => {
             const { isReplaced, isReturned, isCompleted, isCOD, paymentMethod, reason } = getOrderClassification(o);
+            const displayId = o.display_order_id || o.order_group_id || `#${o.order_id}`;
 
             return (
               <div 
                 key={o.order_id} 
                 style={{ 
                   display: 'grid', 
-                  gridTemplateColumns: '85px 2fr 85px 130px 1.3fr 1.6fr 1.2fr 115px', 
+                  gridTemplateColumns: '125px 2fr 80px 125px 1.2fr 1.5fr 1.4fr 115px', 
                   padding: '1.15rem 1.5rem', 
                   borderBottom: '1px solid rgba(0,0,0,0.05)', 
                   alignItems: 'center',
@@ -4435,9 +4624,14 @@ const SoldOrders = () => {
                   transition: 'all 0.15s ease'
                 }}
               >
-                {/* 1. Order ID */}
-                <div style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.92rem' }}>
-                  #{o.order_id}
+                {/* 1. Order ID (Same Master Order ID for all items in this order) */}
+                <div>
+                  <div style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.92rem', letterSpacing: '0.02em' }}>
+                    {displayId}
+                  </div>
+                  <div style={{ fontSize: '0.68rem', color: '#64748b', marginTop: '0.15rem', fontWeight: 600 }}>
+                    Item #{o.order_id} {totalInGroup > 1 ? `(${itemIdx + 1} of ${totalInGroup})` : ''}
+                  </div>
                 </div>
 
                 {/* 2. Product Purchased */}
@@ -4656,17 +4850,25 @@ const SoldOrders = () => {
                   )}
                 </div>
 
-                {/* 7. Buyer & Date */}
+                {/* 7. Buyer, Customer ID & Number of Orders */}
                 <div>
-                  <div style={{ fontWeight: 700, color: '#282c3f', fontSize: '0.85rem' }}>
-                    {o.customer_name}
+                  <div style={{ fontWeight: 700, color: '#282c3f', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                    <span>{o.customer_name}</span>
+                    {o.customer_id && (
+                      <span style={{ fontSize: '0.68rem', background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1', padding: '0.05rem 0.35rem', borderRadius: '4px', fontWeight: 800 }}>
+                        CID: #{o.customer_id}
+                      </span>
+                    )}
                   </div>
-                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
-                    {o.created_at}
+                  <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                    {o.created_at?.replace('â€¢', '•')}
+                  </div>
+                  <div style={{ fontSize: '0.68rem', color: '#03a685', fontWeight: 700, marginTop: '0.15rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                    🛍️ {o.customer_total_orders || 1} {(o.customer_total_orders || 1) === 1 ? 'order' : 'orders'} placed
                   </div>
                 </div>
 
-                {/* 8. Order Status (Replaced / Returned / Completed) */}
+                {/* 8. Order Status */}
                 <div style={{ textAlign: 'center' }}>
                   {isReplaced ? (
                     <div>
@@ -4753,8 +4955,85 @@ const SoldOrders = () => {
                 </div>
               </div>
             );
-          })
-        )}
+          };
+
+          if (viewMode === 'grouped') {
+            return orderGroups.map(group => (
+              <div key={group.order_group_id} style={{ borderBottom: '2.5px solid #cbd5e1' }}>
+                {/* Group Order List Header */}
+                <div style={{
+                  background: 'linear-gradient(90deg, #f8fafc 0%, #f1f5f9 100%)',
+                  borderTop: '1.5px solid #e2e8f0',
+                  borderBottom: '1px solid #cbd5e1',
+                  padding: '0.8rem 1.5rem',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '0.75rem'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.96rem', letterSpacing: '0.02em', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <Package size={16} /> Order {group.order_group_id}
+                    </span>
+                    <span style={{ color: '#cbd5e1' }}>•</span>
+                    <span style={{
+                      background: '#ffffff',
+                      color: '#0f172a',
+                      border: '1.5px solid #cbd5e1',
+                      padding: '0.15rem 0.6rem',
+                      borderRadius: '6px',
+                      fontSize: '0.76rem',
+                      fontWeight: 800,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.35rem'
+                    }}>
+                      👤 Customer ID: #{group.customer_id || 'N/A'} ({group.customer_name})
+                    </span>
+                    <span style={{ color: '#cbd5e1' }}>•</span>
+                    <span style={{
+                      background: '#e0f2fe',
+                      color: '#0369a1',
+                      border: '1px solid #bae6fd',
+                      padding: '0.15rem 0.6rem',
+                      borderRadius: '20px',
+                      fontSize: '0.74rem',
+                      fontWeight: 800
+                    }}>
+                      🛍️ {group.items.length} {group.items.length === 1 ? 'product' : 'products'} ({group.total_quantity} {group.total_quantity === 1 ? 'unit' : 'units'}) in this order
+                    </span>
+                    <span style={{
+                      background: '#dcfce7',
+                      color: '#15803d',
+                      border: '1px solid #bbf7d0',
+                      padding: '0.15rem 0.6rem',
+                      borderRadius: '20px',
+                      fontSize: '0.74rem',
+                      fontWeight: 800
+                    }}>
+                      ⭐ {group.customer_total_orders} Total Orders Placed by Buyer
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+                    <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                      Order Total: <strong style={{ color: '#0f172a', fontSize: '1.02rem', fontWeight: 800 }}>₹{group.total_amount.toFixed(2)}</strong>
+                    </span>
+                    <span style={{ fontSize: '0.76rem', color: '#64748b' }}>
+                      Placed on <strong>{group.created_at?.replace('â€¢', '•')}</strong>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Items in this master order */}
+                {group.items.map((o, itemIdx) => renderOrderRow(o, itemIdx, group.items.length))}
+              </div>
+            ));
+          }
+
+          return filteredOrders.map((o, itemIdx) => renderOrderRow(o, itemIdx, filteredOrders.length));
+        })()}
       </div>
     </div>
   );
